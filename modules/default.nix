@@ -34,4 +34,11 @@ in {
     default = {};
     description = "Stash configuration for given user.";
   };
+
+  config.lib.stash = {
+    fromStash = { stash, path }: {
+      inherit stash path;
+      static = false;
+    };
+  };
 }

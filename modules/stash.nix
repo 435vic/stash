@@ -91,29 +91,38 @@ let
                 '';
               };
 
-              source = mkOption {
-                type = with types; unique { message = "Only one of `source`, `text` or `stash.source` must be set"; } (nullOr path);
-              };
-
-              stash = mkOption {
-                type = types.nullOr (types.submodule {
-                  options = {
-                    enable = mkOption {
-                      type = types.bool;
-                      default = true;
-                    };
-
-                    source = mkOption {
-                      type = types.str;
-                      description = ''
-                        If declared, the file will be symlinked from a non-Nix store location,
-                        called a 'stash'. Works similarly to other dotfile managers like Stow.
-                        If enabled, will take priority over the `source` and `text` options.
-                      '';
-                    };
+              source = let
+                sourceDef = {
+                  static = mkOption {
+                    type = types.bool;
                   };
-                });
-                default = null;
+
+                  stash = mkOption {
+                    type = types.nullOr types.str;
+                    default = null;
+                  };
+
+                  path = mkOption {
+                    type = types.path;
+                  };
+                };
+
+                strOrSourceDef = types.mkOptionType {
+                  name = "strOrSourceDef";
+                  description = "string, path, or result of config.lib.stash.fromStash";
+                  check = v: lib.isAttrs v || lib.isStringLike v;
+                  merge = loc: defs:
+                    let
+                      coerceDef = def:
+                        if lib.isStringLike def.value then
+                          { inherit (def) file; value = { static = true; path = def.value; }; }
+                        else def;
+                      sourceDefType = types.submodule { options = sourceDef; };
+                    in
+                    sourceDefType.merge loc (lib.map coerceDef defs);
+                };
+              in mkOption {
+                type = strOrSourceDef;
               };
             };
 
@@ -128,7 +137,6 @@ let
                       name = "stash_" + (builtins.baseNameOf name);
                     }
                 ))
-                (mkIf (config.stash ? enable && config.stash.enable) null)
               ];
             };
           }
@@ -174,7 +182,8 @@ let
         }
       )
     );
-  staticFiles = lib.filterAttrs (_: f: f.source != null && f.enable) config.files;
+  staticFiles = lib.filterAttrs (_: f: f.source.static) config.files;
+  stashFiles = lib.filterAttrs (_: f: !f.source.static) config.files;
 in {
   imports = [
     (pkgs.path + "/nixos/modules/misc/assertions.nix")
@@ -225,87 +234,97 @@ in {
   config = {
     username = mkDefault name;
 
-    staticFileDerivation = 
+    staticFileDerivation = mkIf (staticFiles != {}) (
       pkgs.runCommandLocal "stash-files" {
         nativeBuildInputs = [ pkgs.xorg.lndir ];
       } (
-      ''
-        mkdir -p $out
+        ''
+          mkdir -p $out
 
-        # Needed in case /nix is a symbolic link.
-        realOut="$(realpath -m "$out")"
+          # Needed in case /nix is a symbolic link.
+          realOut="$(realpath -m "$out")"
 
-        function insertFile() {
-          local source="$1"
-          local relTarget="$2"
-          local executable="$3"
-          local recursive="$4"
-          local ignorelinks="$5"
+          function insertFile() {
+            local source="$1"
+            local relTarget="$2"
+            local executable="$3"
+            local recursive="$4"
+            local ignorelinks="$5"
 
-          if [[ -e "$realOut/$relTarget" ]]; then
-            echo "File conflict for file '$relTarget'" >&2
-            return
-          fi
-
-          # Figure out the real absolute path to the target.
-          local target
-          target="$(realpath -m "$realOut/$relTarget")"
-
-          # Target path must be within $HOME.
-          if [[ ! $target == $realOut* ]] ; then
-            echo "Error installing file '$relTarget' outside \$HOME" >&2
-            exit 1
-          fi
-
-          mkdir -p "$(dirname "$target")"
-          if [[ -d $source ]]; then
-            if [[ $recursive ]]; then
-              mkdir -p "$target"
-              # if [[ $ignorelinks ]]; then
-              #   lndir -silent -ignorelinks "$source" "$target"
-              # else
-                lndir -silent "$source" "$target"
-              # fi
-            else
-              ln -s "$source" "$target"
+            if [[ -e "$realOut/$relTarget" ]]; then
+              echo "File conflict for file '$relTarget'" >&2
+              return
             fi
-          else
-            [[ -x $source ]] && isExecutable=1 || isExecutable=""
 
-            # Link the file into the home file directory if possible,
-            # i.e., if the executable bit of the source is the same we
-            # expect for the target. Otherwise, we copy the file and
-            # set the executable bit to the expected value.
-            if [[ $executable == inherit || $isExecutable == $executable ]]; then
-              ln -s "$source" "$target"
-            else
-              cp "$source" "$target"
+            # Figure out the real absolute path to the target.
+            local target
+            target="$(realpath -m "$realOut/$relTarget")"
 
-              if [[ $executable == inherit ]]; then
-                # Don't change file mode if it should match the source.
-                :
-              elif [[ $executable ]]; then
-                chmod +x "$target"
+            # Target path must be within $HOME.
+            if [[ ! $target == $realOut* ]] ; then
+              echo "Error installing file '$relTarget' outside \$HOME" >&2
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "$target")"
+            if [[ -d $source ]]; then
+              if [[ $recursive ]]; then
+                mkdir -p "$target"
+                # if [[ $ignorelinks ]]; then
+                #   lndir -silent -ignorelinks "$source" "$target"
+                # else
+                  lndir -silent "$source" "$target"
+                # fi
               else
-                chmod -x "$target"
+                ln -s "$source" "$target"
+              fi
+            else
+              [[ -x $source ]] && isExecutable=1 || isExecutable=""
+
+              # Link the file into the home file directory if possible,
+              # i.e., if the executable bit of the source is the same we
+              # expect for the target. Otherwise, we copy the file and
+              # set the executable bit to the expected value.
+              if [[ $executable == inherit || $isExecutable == $executable ]]; then
+                ln -s "$source" "$target"
+              else
+                cp "$source" "$target"
+
+                if [[ $executable == inherit ]]; then
+                  # Don't change file mode if it should match the source.
+                  :
+                elif [[ $executable ]]; then
+                  chmod +x "$target"
+                else
+                  chmod -x "$target"
+                fi
               fi
             fi
-          fi
-        }
-      ''
-      + lib.concatStrings (
-        lib.mapAttrsToList (n: v: ''
-          insertFile ${
-            lib.escapeShellArgs [
-              (sourceStorePath v.source)
-              v.target
-              (if v.executable == null then "inherit" else toString v.executable)
-              (toString v.recursive)
-              (toString false)
-            ]
           }
-        '') staticFiles
+        ''
+        + lib.concatStrings (
+          lib.mapAttrsToList (n: v: ''
+            insertFile ${
+              lib.escapeShellArgs [
+                (sourceStorePath v.source.path)
+                v.target
+                (if v.executable == null then "inherit" else toString v.executable)
+                (toString v.recursive)
+                (toString false)
+              ]
+            }
+          '') staticFiles
+        )
       )
     );
+
+    stashStateDerivation = let
+      data = lib.mapAttrs (_: cfg: let
+        source = "${cfg.source.stash}${cfg.source.path}";
+      in {
+        inherit (cfg) recursive target;
+        inherit source;
+      }) stashFiles;
+    in lib.mkIf (stashFiles != {}) (pkgs.writeText "stash-state.json" (builtins.toJSON data));
   };
 }

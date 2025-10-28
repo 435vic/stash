@@ -3,36 +3,38 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
+    nix-unit.url = "github:nix-community/nix-unit";
+    nix-unit.inputs.nixpkgs.follows = "nixpkgs";
+    nix-unit.inputs.flake-parts.follows = "flake-parts";
   };
 
-  outputs = { self, nixpkgs }: let
-    supportedSystems = [
-      "x86_64-linux"
-      "aarch64-linux"
-      # "aarch64-darwin"
-    ];
-
-    pkgsForSystem = system: nixpkgs.legacyPackages.${system};
-
-    eachSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f { pkgs = pkgsForSystem system; });
-  in {
-    lib = {
-      inherit supportedSystems eachSystem;
-    };
-
-    nixosConfigurations.test = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        ./tests/test-machine.nix
+  outputs =
+    inputs@{ flake-parts, nixpkgs, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [
+        inputs.nix-unit.modules.flake.default
       ];
-    };
 
-    devShells = eachSystem ({ pkgs, ...}: {
-      default = pkgs.mkShellNoCC {
-        packages = [
-          pkgs.nix-unit
-        ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+
+      flake = {
+        nixosConfigurations.test = nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            ./tests/test-machine.nix
+          ];
+        };
       };
-    });
-  };
+
+      perSystem = { pkgs, ... }: {
+        nix-unit.inputs = {
+          inherit (inputs) nixpkgs nix-unit flake-parts;
+        };
+      };
+    };
 }

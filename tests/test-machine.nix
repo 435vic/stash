@@ -19,11 +19,9 @@
     };
 
     files = {
-      ".config/static" = {
-        text = ''
-          ASASLHFASHF
-        '';
-      };
+      ".config/static".text = ''
+        ASASLHFASHF
+      '';
 
       ".config/nvim" = {
         source = ../lib;
@@ -31,7 +29,11 @@
       };
 
       ".config/waybar" = {
-        stash.source = "dotfiles/waybar";
+        source = {
+          path = "/waybar";
+          stash = "dotfiles";
+          static = false;
+        };
         recursive = true;
       };
     };
