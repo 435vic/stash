@@ -35,6 +35,11 @@
         nix-unit.inputs = {
           inherit (inputs) nixpkgs nix-unit flake-parts;
         };
+
+        nix-unit.tests = let
+          moduleTester = import ./tests/unit/module-tester.nix { inherit pkgs; } (import ./modules/stash.nix);
+          moduleTests = moduleTester (import ./tests/unit/module-tests.nix);
+        in moduleTests;
       };
     };
 }
