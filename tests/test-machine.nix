@@ -1,4 +1,4 @@
-{
+{ config, ... }: {
   imports = [
     ../modules
   ];
@@ -8,7 +8,6 @@
   users.users.vico = {
     isNormalUser = true;
     home = "/home/vico";
-    uid = 1000;
   };
 
   stash.users.vico = {
@@ -27,6 +26,10 @@
         source = ../lib;
         recursive = true;
       };
+
+      # ".config/vivaldi" = {
+      #   source = config.lib.stash.fromStash { stash = "non-existent"; path = "/vivaldi"; };
+      # };
 
       ".config/waybar" = {
         source = {

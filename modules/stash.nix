@@ -1,13 +1,20 @@
 { name, config, lib, pkgs, ... }:
 
 let
-  inherit (lib) types mkOption mkDefault mkIf mkMerge
+  inherit (lib)
+    types
+    mkOption
+    hasPrefix
+    mkDefault
+    mkIf
+    mkMerge
     genList
     length
     lowerChars
     replaceStrings
     stringToCharacters
     upperChars
+    mapAttrsToList
     ;
 
   storeFileName =
@@ -143,13 +150,16 @@ let
         )
       );
 
-  stashType =
-    types.attrsOf (
+  stashType = let
+    inherit (config) homeDirectory;
+  in
+  types.attrsOf (
       types.submodule (
         { name, config, ... }: {
           options = {
             name = mkOption {
               type = types.str;
+              internal = true;
               description = ''
                 The name of the stash.
               '';
@@ -172,12 +182,13 @@ let
 
             path = mkOption {
               description = "Path to the location of the stash, resolved in runtime.";
-              type = pathWithBase;
+              apply = p: if hasPrefix "/" p then p else "${homeDirectory}/${p}";
+              type = types.str;
             };
           };
 
           config = {
-            name = mkDefault name;
+            inherit name;
           };
         }
       )
@@ -202,18 +213,11 @@ in {
       type = fileType;
     };
 
-    username = mkOption {
+    homeDirectory = mkOption {
       description = ''
-        The username that this config applies to. All target paths specified in `files` will be interpreted
-        relative to `users.users.$${username}.home`.
+        The user's home directory for this stash config.
       '';
       type = types.str;
-    };
-
-    activationScript = mkOption {
-      internal = true;
-      type = types.str;
-      default = "";
     };
 
     staticFileDerivation = mkOption {
@@ -229,10 +233,22 @@ in {
       description = "State of stash-managed links";
       default = null;
     };
+
+    generationPackage = mkOption {
+      internal = true;
+      type = types.package;
+      description = "derivation containing all of the information for this generation";
+      default = null;
+    };
   };
 
   config = {
-    username = mkDefault name;
+    assertions = let
+      validStashRefs = mapAttrsToList (_: f: mkIf (!f.source.static) {
+        assertion = builtins.hasAttr f.source.stash config.stashes;
+        message = ''Stash name ${f.source.stash} for `files."${f.target}" has not been defined.'';
+      }) config.files; 
+    in mkMerge [ validStashRefs ]; 
 
     staticFileDerivation = mkIf (staticFiles != {}) (
       pkgs.runCommandLocal "stash-files" {
@@ -319,12 +335,32 @@ in {
     );
 
     stashStateDerivation = let
-      data = lib.mapAttrs (_: cfg: let
-        source = "${cfg.source.stash}${cfg.source.path}";
+      data = lib.mapAttrs' (_: cfg: let
+        source = 
+          let inherit (cfg) source; in
+            if source.static then "${source.path}" else (
+              let
+                stashBase = config.stashes.${source.stash}.path;
+              in
+              "${stashBase}${source.path}"
+            );
       in {
-        inherit (cfg) recursive target;
-        inherit source;
-      }) stashFiles;
+        name = cfg.target;
+        value = {
+          inherit (cfg) recursive target;
+          inherit source;
+        };
+      }) config.files;
     in lib.mkIf (stashFiles != {}) (pkgs.writeText "stash-state.json" (builtins.toJSON data));
+
+    generationPackage = 
+      pkgs.runCommandLocal "stash" {} ''
+        mkdir -p $out
+
+        ln -s ${config.staticFileDerivation} $out/static-files
+        ln -s ${config.stashStateDerivation} $out/stash.json
+
+        # possible home manager extra commands?
+      '';
   };
 }

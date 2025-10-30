@@ -31,7 +31,7 @@
         };
       };
 
-      perSystem = { pkgs, ... }: {
+      perSystem = { pkgs, inputs', ... }: {
         nix-unit.inputs = {
           inherit (inputs) nixpkgs nix-unit flake-parts;
         };
@@ -40,6 +40,10 @@
           moduleTester = import ./tests/unit/module-tester.nix { inherit pkgs; } (import ./modules/stash.nix);
           moduleTests = moduleTester (import ./tests/unit/module-tests.nix);
         in moduleTests;
+
+        devShells.default = pkgs.mkShellNoCC {
+          packages = [ pkgs.deno inputs'.nix-unit.packages.nix-unit ];
+        };
       };
     };
 }
