@@ -74,6 +74,11 @@ let
                 '';
               };
 
+              force = mkOption {
+                type = types.bool;
+                default = false;
+              };
+
               recursive = mkOption {
                 type = types.bool;
                 default = false;
@@ -338,7 +343,7 @@ in {
       data = lib.mapAttrs' (_: cfg: let
         source = 
           let inherit (cfg) source; in
-            if source.static then "${source.path}" else (
+            if source.static then "${config.staticFileDerivation}/${cfg.target}" else (
               let
                 stashBase = config.stashes.${source.stash}.path;
               in
@@ -347,7 +352,7 @@ in {
       in {
         name = cfg.target;
         value = {
-          inherit (cfg) recursive target;
+          inherit (cfg) recursive target force;
           inherit source;
         };
       }) config.files;
