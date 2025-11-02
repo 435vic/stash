@@ -31,10 +31,16 @@
         };
       };
 
-      perSystem = { pkgs, inputs', ... }: {
+      perSystem = { pkgs, inputs', ... }: let
+        activationTester = import ./tests/test-activation.nix { inherit pkgs; };
+      in {
         nix-unit.inputs = {
           inherit (inputs) nixpkgs nix-unit flake-parts;
         };
+
+        checks = activationTester.tests;
+
+        legacyPackages = { inherit activationTester; };
 
         nix-unit.tests = let
           moduleTester = import ./tests/unit/module-tester.nix { inherit pkgs; } (import ./modules/stash.nix);

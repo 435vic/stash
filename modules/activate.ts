@@ -4,6 +4,7 @@ import * as path from "jsr:@std/path@1.1.2";
 
 // read: <static file derivation>, each stash's path
 // write: $HOME
+// asfa
 
 // nix-store --add-root creates the in between directories as well
 
@@ -58,6 +59,8 @@ const newGenStaticFiles = `${newGeneration}/static-files`;
 
 const stashFiles = newGenData;
 const HOME = Deno.env.get('HOME')!;
+
+console.log(`HOME: ${HOME}`);
 
 if (!HOME) {
     throw new Error("$HOME must be set.");

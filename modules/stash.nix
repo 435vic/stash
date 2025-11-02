@@ -1,4 +1,4 @@
-{ name, config, lib, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   inherit (lib)
@@ -341,6 +341,7 @@ in {
 
     stashStateDerivation = let
       data = lib.mapAttrs' (_: cfg: let
+        inherit (cfg.source) static;
         source = 
           let inherit (cfg) source; in
             if source.static then "${config.staticFileDerivation}/${cfg.target}" else (
@@ -353,16 +354,16 @@ in {
         name = cfg.target;
         value = {
           inherit (cfg) recursive target force;
-          inherit source;
+          inherit source static;
         };
       }) config.files;
-    in lib.mkIf (stashFiles != {}) (pkgs.writeText "stash-state.json" (builtins.toJSON data));
+    in (pkgs.writeText "stash-state.json" (builtins.toJSON data));
 
     generationPackage = 
       pkgs.runCommandLocal "stash" {} ''
         mkdir -p $out
 
-        ln -s ${config.staticFileDerivation} $out/static-files
+        ${lib.optionalString (staticFiles != {}) "ln -s ${config.staticFileDerivation} $out/static-files"}
         ln -s ${config.stashStateDerivation} $out/stash.json
 
         # possible home manager extra commands?
