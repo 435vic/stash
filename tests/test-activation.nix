@@ -46,6 +46,7 @@
 
   activateScript = mkDenoScript ../modules/activate.ts { denoArgs = [
       "--allow-env=HOME,XDG_STATE_HOME"
+      "--allow-run=cmp"
       "-R"
   ];};
 
