@@ -54,13 +54,6 @@ interface StashEntry {
     forced?: boolean
 };
 
-interface CollisionData {
-    collision: boolean,
-    backup?: boolean,
-    skip?: boolean,
-    reason?: string
-} 
-
 enum CollisionType {
     Nothing = 0,
     Collision = 1, // target exits already
@@ -85,9 +78,7 @@ interface ManifestEntry {
 
 const newGeneration = Deno.args[0];
 const newGenData: Record<string, StashEntry> = JSON.parse(await Deno.readTextFile(`${newGeneration}/stash.json`));
-const newGenStaticFiles = `${newGeneration}/static-files`;
 
-const stashFiles = newGenData;
 const HOME = Deno.env.get('HOME')!;
 
 console.debug(`HOME: ${HOME}`);
@@ -98,12 +89,8 @@ if (!HOME) {
 
 const statePath = Deno.env.get('XDG_STATE_HOME') || path.join(HOME, '.local/state/stash'); 
 const gcRootsPath = path.join(statePath, 'gcroots');
+const newGenPath = path.join(gcRootsPath, 'new-home');
 const oldGenPath = path.join(gcRootsPath, 'current-home');
-const oldGenDataPath = path.join(oldGenPath, 'stash.json');
-const oldGenData = await getFileOrNull<Promise<Record<string, StashEntry>>>(oldGenDataPath, async (_) => {
-    const data = await Deno.readTextFile(oldGenDataPath);
-    return JSON.parse(data);
-});
 
 const oldManifestPath = path.join(statePath, 'manifest.json');
 const newManifestPath = path.join(statePath, 'new-manifest.json');
@@ -219,20 +206,105 @@ async function linkFile(data: { file: StashEntry, collision: CollisionType }) {
     return filesToLink;
 }
 
-// files with collision data added on
-const files = await Promise.all(Object.values(newGenData).map(async (file) => {
-    return {
-        data: file,
-        collision: await isCollision(file)
-    };
-}));
+async function cleanup(oldEntry: ManifestEntry) {
+    if (newGenData[oldEntry.target] !== undefined) {
+        console.debug(`${oldEntry.target} in new generation, skipping`);
+        return;
+    }
 
-const collisions = files.filter(file => file.collision & CollisionType.Fatal);
+    const fullTargetPath = path.join(HOME, oldEntry.target);
+    if ((await Deno.realPath(fullTargetPath).catch(() => null)) !== oldEntry.source) {
+        console.warn(`${fullTargetPath} points to unexpected location, skipping`);
+        return;
+    }
+    
+    try {
+        await Deno.remove(fullTargetPath);
+    } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+        }
+        console.debug(`stale link ${fullTargetPath} already gone, skipping`);
+    }
 
-if (collisions.length > 0) {
-    console.error(`ERROR: ${collisions.length} collision(s) found: `);
-    console.error(collisions);
+    for (
+        let currentDir = path.dirname(fullTargetPath);
+        currentDir !== HOME && currentDir.startsWith(HOME);
+        currentDir = path.dirname(currentDir)
+    ) {
+        try {
+            Deno.remove(currentDir);
+            console.debug(`Removed empty directory ${currentDir}`);
+        } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+                // @ts-ignore error always has message
+                console.error(`Unkown error removing directory ${currentDir}: ${error.message}`);
+                throw error;
+            }
+
+            currentDir = path.dirname(currentDir);
+        }
+    }
 }
 
+async function activate() {
+    // Check for collisions
+    const files = await Promise.all(Object.values(newGenData).map(async (file) => {
+        return {
+            file,
+            collision: await isCollision(file)
+        };
+    }));
 
+    const collisions = files.filter(file => file.collision & CollisionType.Fatal);
+    if (collisions.length > 0) {
+        console.error(`ERROR: ${collisions.length} collision(s) found: `);
+        console.error(collisions);
+    }
+
+    // Clean up old generation
+    if (oldManifest) {
+        Object.values(oldManifest).forEach(entry => cleanup(entry));
+    }
+
+    // Link new generation, obtaining manifest
+    const newManifestData = 
+        (await Promise.all(Object.values(files).map(file => linkFile(file))))
+            .flat()
+            .reduce(
+                 ((manifest, entry) => {
+                    manifest[entry.target] = entry;
+                    return manifest;
+                 }),
+                 {} as Record<string, ManifestEntry>
+            );
+
+    await Deno.writeTextFile(newManifestPath, JSON.stringify(newManifestData, null, 4));
+    await Deno.rename(newManifestPath, oldManifestPath);
+}
+
+try {
+    const addTempRoot = new Deno.Command("nix-store", { args: [
+        "--realise",
+        newGeneration,
+        "--add-root",
+        newGenPath
+    ]});
+    await addTempRoot.output();
+
+    await activate();
+
+    const makeRoot = new Deno.Command("nix-store", {args: [
+        "--realise",
+        newGeneration,
+        "--add-root",
+        oldGenPath
+    ]})
+    await makeRoot.output();
+} catch (error) {
+    // @ts-ignore error always has message
+    console.error(`Error during activation: ${error.message}`);
+} finally {
+    Deno.remove(newGenPath);
+}
 
