@@ -1,25 +1,7 @@
-#! /usr/bin/env -S deno run --allow-env=HOME
+#! /usr/bin/env -S deno run -A
 
 import * as path from "jsr:@std/path@1.1.2";
 import { walk } from "jsr:@std/fs@1.0.19"
-
-// read: <static file derivation>, each stash's path
-// write: $HOME
-
-// nix-store --add-root creates the in between directories as well
-
-// 1. Check collisions; a collision occurs if
-//   - target exists AND
-//   - forced != true AND
-//   - source != target (in content, cmp -s) AND
-//   - backup not configured or impossible (backup alr exists)
-// 2. Clean up old gen's links
-//   - Delete links in the old generation NOT in the new generation (cmp by source path)
-//   - Recursively delete old directories
-// 3. Make new gen's links
-//   - Backup target path if it exists and not a symlink (and backups enabled)
-//   - If source == target don't symlink, not necessary
-//   - place symlink with --force (so target path matches new gen)
 
 if (Deno.args.length !== 1) {
     throw new Error("usage: activate.ts [activation package]");
@@ -58,7 +40,7 @@ enum CollisionType {
     Nothing = 0,
     Collision = 1, // target exits already
     Overwrite = 1 << 1, // can be overwritten safely
-    Backup = 1 << 2, // should be backed up beforehand
+    Backup = 1 << 2, // should be backed up beforehand (or fatal if backups are disabled)
     Skip = 1 << 3, // skip dealing with this file entirely
     Fatal = 1 << 4, // fatal error
     IdenticalFiles = Collision | Skip,
@@ -74,6 +56,7 @@ interface ManifestEntry {
     target: string,
     parent: string | null,
     static: boolean,
+    forced: boolean,
 }
 
 const newGeneration = Deno.args[0];
@@ -100,7 +83,35 @@ const oldManifest = await getFileOrNull<Promise<Record<string, ManifestEntry>>>(
     return JSON.parse(data);
 });
 
-async function isCollision(file: StashEntry): Promise<CollisionType> {
+async function expandEntry(entry: StashEntry): Promise<ManifestEntry[]> {
+    if (!entry.recursive) {
+        return [{
+           source: entry.source,
+           target: entry.target,
+           static: entry.static,
+           forced: entry.forced ?? false,
+           parent: null
+        }]
+    }
+
+    const contents = await Array.fromAsync(walk(entry.source, {
+        followSymlinks: false,
+        includeDirs: false
+    }));
+
+    return contents.map(f => {
+        const relative = path.relative(entry.source, f.path);
+        return {
+            source: f.path,
+            target: path.join(entry.target, relative),
+            parent: entry.target,
+            forced: entry.forced ?? false,
+            static: entry.static
+        }
+    });
+}
+
+async function isCollision(file: ManifestEntry): Promise<CollisionType> {
     const fullTargetPath = path.join(HOME, file.target);
     const targetStat = await getFileOrNull(fullTargetPath);
 
@@ -110,6 +121,11 @@ async function isCollision(file: StashEntry): Promise<CollisionType> {
 
     // Target location exists
     const resolvedPath = await Deno.realPath(fullTargetPath);
+    if (resolvedPath === file.source) {
+        // symlink from new generation (script was interrupted), can be skipped
+        return CollisionType.IdenticalFiles;
+    }
+
     if (oldManifest !== null) {
         // check if target path was managed by previous generation
         if (oldManifest[file.target] !== undefined) {
@@ -146,68 +162,34 @@ async function isCollision(file: StashEntry): Promise<CollisionType> {
     }
 }
 
-async function linkFile(data: { file: StashEntry, collision: CollisionType }) {
-    const filesToLink: ManifestEntry[] = await (async () => {
-        const { file } = data;
-        if (file.recursive) {
-            const files = await Array.fromAsync(walk(file.source, {
-                followSymlinks: false,
-                includeDirs: false
-            }));
+async function linkFile({ entry, collision }: { entry: ManifestEntry, collision: CollisionType }) {
+    const fullTargetPath = path.join(HOME, entry.target);
+    if (collision & CollisionType.Fatal) {
+        console.error(`Cannot continue: file at ${fullTargetPath} would be overwritten`);
+    }
 
-            return files.map(f => {
-                const relativePath = path.relative(file.source, f.path);
-                return {
-                    source: f.path, 
-                    target: `${relativePath}${file.target}`,
-                    parent: file.target,
-                    static: file.static,
-                    recursive: true,
-                }
-            });
-        } else {
-            return [{
-                source: file.source,
-                target: file.target,
-                parent: null,
-                static: file.static,
-                recursive: false,
-            }]
-        }
-    })();
+    if (collision === CollisionType.IdenticalFiles) {
+        console.debug(`Skipping linking ${fullTargetPath}, identical to ${entry.source}`);
+        return;
+    }
 
-    const { collision } = data;
-    filesToLink.forEach(async (file) => {
-        const fullTargetPath = path.join(HOME, file.target);
-        if (collision & CollisionType.Fatal) {
-            console.error(`Cannot continue: file at ${fullTargetPath} would be overwritten`);
-        }
+    // TODO: add option to disable backup overwrites
+    const backupPath = `${fullTargetPath}.stash.bak`;
+    if (collision & CollisionType.Backup) {
+        console.debug(`making backup of ${fullTargetPath}`);
+        await Deno.rename(fullTargetPath, backupPath);
+    }
 
-        if (collision === CollisionType.IdenticalFiles) {
-            console.debug(`Skipping linking ${fullTargetPath}, identical to ${file.source}`);
-            return;
-        }
+    await Deno.mkdir(path.dirname(fullTargetPath), { recursive: true });
 
-        // TODO: add option to disable backup overwrites
-        const backupPath = `${fullTargetPath}.stash.bak`;
-        if (collision & CollisionType.Backup) {
-            console.debug(`making backup of ${fullTargetPath}`);
-            await Deno.rename(fullTargetPath, backupPath);
-        }
-
-        await Deno.mkdir(path.dirname(fullTargetPath), { recursive: true });
-
-        // replace link atomically
-        const tmpLinkPath = `${fullTargetPath}.stash.tmp`;
-        await Deno.symlink(file.source, tmpLinkPath);
-        await Deno.rename(tmpLinkPath, fullTargetPath);
-    });
-
-    return filesToLink;
+    // replace link atomically
+    const tmpLinkPath = `${fullTargetPath}.stash.tmp`;
+    await Deno.symlink(entry.source, tmpLinkPath);
+    await Deno.rename(tmpLinkPath, fullTargetPath);
 }
 
 async function cleanup(oldEntry: ManifestEntry) {
-    if (newGenData[oldEntry.target] !== undefined) {
+    if (newGenData[oldEntry.target] !== undefined || (oldEntry.parent !== null && newGenData[oldEntry.parent] !== undefined)) {
         console.debug(`${oldEntry.target} in new generation, skipping`);
         return;
     }
@@ -233,51 +215,55 @@ async function cleanup(oldEntry: ManifestEntry) {
         currentDir = path.dirname(currentDir)
     ) {
         try {
-            Deno.remove(currentDir);
+            await Deno.remove(currentDir);
             console.debug(`Removed empty directory ${currentDir}`);
         } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) {
-                // @ts-ignore error always has message
-                console.error(`Unkown error removing directory ${currentDir}: ${error.message}`);
-                throw error;
+            if (error instanceof Deno.errors.NotFound) {
+                console.debug(`deleting directory ${currentDir} but not found, skipping`);
+                continue;
             }
-
-            currentDir = path.dirname(currentDir);
+            // @ts-ignore error
+            console.debug(`Could not remove directory ${currentDir}, stopping cleanup: ${error.message}`);
+            break;
         }
     }
 }
 
 async function activate() {
-    // Check for collisions
-    const files = await Promise.all(Object.values(newGenData).map(async (file) => {
+    const recursedFiles = await Promise.all(Object.values(newGenData).map(expandEntry));
+    const allFiles = recursedFiles.flat();
+
+    const checkedFiles = await Promise.all(allFiles.map(async (entry) => {
         return {
-            file,
-            collision: await isCollision(file)
-        };
+            entry,
+            collision: await isCollision(entry)
+        }
     }));
 
-    const collisions = files.filter(file => file.collision & CollisionType.Fatal);
+    const collisions = checkedFiles.filter(file => file.collision & CollisionType.Fatal);
     if (collisions.length > 0) {
         console.error(`ERROR: ${collisions.length} collision(s) found: `);
         console.error(collisions);
+        throw new Error(`Collisions found`);
     }
 
     // Clean up old generation
     if (oldManifest) {
-        Object.values(oldManifest).forEach(entry => cleanup(entry));
+        await Promise.all(Object.values(oldManifest).map(cleanup));
+    }
+
+    for (const entry of checkedFiles) {
+        await linkFile(entry);
     }
 
     // Link new generation, obtaining manifest
-    const newManifestData = 
-        (await Promise.all(Object.values(files).map(file => linkFile(file))))
-            .flat()
-            .reduce(
-                 ((manifest, entry) => {
-                    manifest[entry.target] = entry;
-                    return manifest;
-                 }),
-                 {} as Record<string, ManifestEntry>
-            );
+    const newManifestData = checkedFiles.reduce(
+        ((manifest, { entry }) => {
+            manifest[entry.target] = entry;
+            return manifest;
+        }),
+        {} as Record<string, ManifestEntry>
+    );
 
     await Deno.writeTextFile(newManifestPath, JSON.stringify(newManifestData, null, 4));
     await Deno.rename(newManifestPath, oldManifestPath);
@@ -304,7 +290,15 @@ try {
 } catch (error) {
     // @ts-ignore error always has message
     console.error(`Error during activation: ${error.message}`);
+    Deno.exit(1);
 } finally {
-    Deno.remove(newGenPath);
+    try {
+        await Deno.remove(newGenPath);
+    } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+            // @ts-ignore error
+            console.warn(`Failed to remove temporary GC root: ${error.message}`);
+        }
+    }
 }
 
