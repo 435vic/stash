@@ -11,7 +11,7 @@
       nativeBuildInputs = [ pkgs.deno ];
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = "sha256-WWN2HfBrr/ENhiNJrXLNF57ov+D6t6xI8pjlET79ICs=";
+      outputHash = "sha256-KTwM7vtTDl2hw+CjlYVu4o7w319DASzXIt6shIh77a4=";
 
       phases = [ "buildPhase" "installPhase" ];
 
@@ -27,6 +27,7 @@
     extraArgs = lib.concatStringsSep " " denoArgs;
     wrapperScript = ''
       #!${pkgs.runtimeShell}
+      export STASH_TEST_MODE=1
       cd $out/lib
       deno run --vendor=true ${extraArgs} $filename \$@
     '';
@@ -45,9 +46,9 @@
   '';
 
   activateScript = mkDenoScript ../modules/activate.ts { denoArgs = [
-      "--allow-env=HOME,XDG_STATE_HOME"
+      "--allow-env=HOME,XDG_STATE_HOME,'STASH_*'"
       "--allow-run=cmp"
-      "-R"
+      "-RW"
   ];};
 
   mkGeneration = config: let
@@ -58,9 +59,35 @@
     };
   in evaluated.config.generationPackage;
 
+  # Helper to create a manifest file
+  mkManifest = entries: pkgs.writeText "manifest.json" (builtins.toJSON entries);
+
+  # Helper to create file tree in HOME
+  setupHomeFiles = homeFiles: lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (path: attrs: let
+      content = attrs.content or "";
+      isSymlink = attrs.symlink or null;
+      executable = attrs.executable or false;
+    in
+      if isSymlink != null then ''
+        targetDir="$HOME/$(dirname "${path}")"
+        mkdir -p "$targetDir"
+        ln -s "${isSymlink}" "$HOME/${path}"
+      '' else ''
+        targetDir="$HOME/$(dirname "${path}")"
+        mkdir -p "$targetDir"
+        cat > "$HOME/${path}" << 'FILE_EOF'
+        ${content}
+        FILE_EOF
+        ${lib.optionalString executable "chmod +x \"$HOME/${path}\""}
+      ''
+    ) homeFiles
+  );
+
   mkActivationTest = {
     name,
     oldGen ? null,
+    oldManifest ? null,
     newGen,
     homeFiles ? {},
     env ? {},
@@ -72,12 +99,49 @@
       pkgs.deno
       pkgs.diffutils
       pkgs.coreutils
-      pkgs.writableTmpDirAsHomeHook
+      # pkgs.writableTmpDirAsHomeHook
     ];
   } ''
+    # Make HOME the output of the derivation so it can be inspected manually
+    export HOME=$out
     export XDG_STATE_HOME="$HOME/.local/state"
     mkdir -p "$XDG_STATE_HOME/stash/gcroots"
     gcRootsDir="$XDG_STATE_HOME/stash/gcroots"
+
+    ${setupHomeFiles homeFiles}
+
+    ${lib.optionalString (oldGen != null) ''
+      oldGenPath="${mkGeneration oldGen}"
+      echo "Old generation: $oldGenPath"
+      
+      # Create gcroot for old generation
+      ln -sf "$oldGenPath" "$gcRootsDir/current-home"
+      
+      ${if oldManifest != null then ''
+        # Use explicit manifest
+        cat > "$manifestPath" << 'MANIFEST_EOF'
+        ${builtins.toJSON oldManifest}
+        MANIFEST_EOF
+        echo "Using custom manifest"
+      '' else ''
+        # Auto-generate manifest from oldGen's stash.json
+        if [ -f "$oldGenPath/stash.json" ]; then
+          # Create a basic manifest from the stash.json
+          # This simulates what a proper activation would have created
+          jq 'to_entries | map({
+            key: .key,
+            value: {
+              source: .value.source,
+              target: .value.target,
+              parent: null,
+              static: .value.static,
+              forced: (.value.forced // false)
+            }
+          }) | from_entries' "$oldGenPath/stash.json" > "$manifestPath"
+          echo "Auto-generated manifest from old generation"
+        fi
+      ''}
+    ''}
 
     ${lib.concatStringsSep "\n" (lib.mapAttrsToList (path: content: ''
       targetDir="$HOME/$(dirname "${path}")"
@@ -86,13 +150,6 @@
       ${content}
       FILE_EOF
     '') homeFiles)}
-
-    # Setup old generation if specified
-    ${lib.optionalString (oldGen != null) ''
-      oldGenPath="${mkGeneration oldGen}"
-      ln -s "$oldGenPath" "$gcRootsDir/current-home"
-      echo "Old generation set up at: $oldGenPath"
-    ''}
 
     newGenPath="${mkGeneration newGen}"
     echo "New generation path: $newGenPath"
