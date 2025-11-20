@@ -1,8 +1,5 @@
-{ config, ... }: {
-  imports = [
-    ../modules
-  ];
-
+{ config, ... }:
+{
   fileSystems."/".device = "/dev/null";
   boot.loader.grub.device = "/dev/null";
   users.users.vico = {
@@ -12,29 +9,25 @@
 
   stash.users.vico = {
     stashes = {
-      dotfiles = {
-        path = "vicOS/config";
+      wallpapers = {
+        path = "Pictures/wallpapers";
       };
     };
 
     files = {
-      ".config/static".text = ''
+      "static.txt".text = ''
         ASASLHFASHF
       '';
 
-      ".config/nvim" = {
-        source = ../lib;
+      "data/tests" = {
+        source = ./.;
         recursive = true;
       };
 
-      # ".config/vivaldi" = {
-      #   source = config.lib.stash.fromStash { stash = "non-existent"; path = "/vivaldi"; };
-      # };
-
-      ".config/waybar" = {
+      "wallpaper.png" = {
         source = {
-          path = "/waybar";
-          stash = "dotfiles";
+          path = "/sky.png";
+          stash = "wallpapers";
           static = false;
         };
         recursive = true;
@@ -42,4 +35,3 @@
     };
   };
 }
-

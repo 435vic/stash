@@ -26,30 +26,49 @@
         nixosConfigurations.test = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
+            ./modules/nixos.nix
             ./tests/test-machine.nix
           ];
         };
       };
 
-      perSystem = { pkgs, inputs', ... }: let
-        activationTester = import ./tests/test-activation.nix { inherit pkgs; };
-      in {
-        nix-unit.inputs = {
-          inherit (inputs) nixpkgs nix-unit flake-parts;
+      perSystem =
+        {
+          pkgs,
+          inputs',
+          system,
+          ...
+        }:
+        let
+          activationTester = import ./tests/test-activation.nix { inherit pkgs; };
+        in
+        {
+          nix-unit.inputs = {
+            inherit (inputs) nixpkgs nix-unit flake-parts;
+          };
+
+          checks = activationTester.tests;
+
+          legacyPackages = { inherit activationTester; };
+
+          nix-unit.tests =
+            let
+              moduleTests = import ./tests/module {
+                inherit pkgs;
+                module = ./modules;
+              };
+            in
+            moduleTests;
+
+          devShells.default = pkgs.mkShellNoCC {
+            packages = [
+              pkgs.deno
+              inputs'.nix-unit.packages.nix-unit
+              (pkgs.writeShellScriptBin "run-module-tests" ''
+                ${inputs'.nix-unit.packages.nix-unit}/bin/nix-unit --flake .#tests.systems.${system}
+              '')
+            ];
+          };
         };
-
-        checks = activationTester.tests;
-
-        legacyPackages = { inherit activationTester; };
-
-        nix-unit.tests = let
-          moduleTester = import ./tests/unit/module-tester.nix { inherit pkgs; } (import ./modules/stash.nix);
-          moduleTests = moduleTester (import ./tests/unit/module-tests.nix);
-        in moduleTests;
-
-        devShells.default = pkgs.mkShellNoCC {
-          packages = [ pkgs.deno inputs'.nix-unit.packages.nix-unit ];
-        };
-      };
     };
 }
