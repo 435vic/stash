@@ -436,45 +436,36 @@ in
 
     stashStateDerivation =
       let
-        data = lib.mapAttrs' (
-          _: cfg:
-          let
-            inherit (cfg.source) static;
-            source =
-              let
-                inherit (cfg) source;
-                stashBase =
-                  if source.static then
-                    "${config.staticFileDerivation}/${cfg.target}"
-                  else
-                    (
-                      let
-                        base = config.stashes.${source.stash}.path;
-                      in
-                      # Normalize base to avoid accidental double slashes
-                      # and keep a consistent representation.
-                      lib.removeSuffix "/" base
-                    );
-                # Normalize relative path: remove a leading slash so
-                # it always concatenates consistently with stashBase.
-                relPath =
-                  let
-                    p = toString source.path;
-                  in
-                  lib.removePrefix "/" p;
-              in
-              "${stashBase}/${relPath}";
-          in
-          {
-            name = cfg.target;
-            value = {
-              inherit (cfg) recursive target forced;
-              inherit source static;
+        files = lib.mapAttrs' (name: cfg: {
+          name = name;
+          value = {
+            target = cfg.target;
+            recursive = cfg.recursive;
+            forced = cfg.forced;
+            executable = cfg.executable;
+            source = {
+              static = cfg.source.static;
+              stash = if cfg.source.static then null else cfg.source.stash;
+              # For static files, ensure the path is copied to the store and we record
+              # the store path. For stash files, the path is relative to the stash root.
+              path = if cfg.source.static then toString (sourceStorePath cfg.source.path) else cfg.source.path;
             };
-          }
-        ) config.files;
+          };
+        }) config.files;
+
+        stashes = lib.mapAttrs' (name: stashCfg: {
+          name = name;
+          value = {
+            name = stashCfg.name;
+            path = stashCfg.path;
+          };
+        }) config.stashes;
       in
-      (pkgs.writeText "stash-state.json" (builtins.toJSON data));
+      (pkgs.writeText "stash.json" (
+        builtins.toJSON {
+          inherit files stashes;
+        }
+      ));
 
     generationPackage =
       let
