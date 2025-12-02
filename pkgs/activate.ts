@@ -10,12 +10,10 @@ function debugLog(...args: unknown[]) {
   console.debug(...args);
 }
 
-// Parse command line arguments
-// const VERIFY_MODE = Deno.args.includes("--verify");
 const activationPackageArg = Deno.args.find((arg) => !arg.startsWith("--"));
 
 if (!activationPackageArg) {
-  throw new Error("usage: activate.ts [--verify] [activation package]");
+  throw new Error("usage: activate.ts [activation package]");
 }
 
 async function getFileOrNull(path: string): Promise<Deno.FileInfo | null>;
@@ -100,21 +98,6 @@ interface ManifestEntry {
   sourceRelPath: string;
 }
 
-enum CollisionType {
-  Nothing = 0,
-  Collision = 1, // target exits already
-  Overwrite = 1 << 1, // can be overwritten safely
-  Backup = 1 << 2, // should be backed up beforehand (or fatal if backups are disabled)
-  Skip = 1 << 3, // skip dealing with this file entirely
-  Fatal = 1 << 4, // fatal error
-  IdenticalFiles = Collision | Skip,
-  ManagedSymlink = Collision | Overwrite,
-  CorruptedManagedSymlink = Collision | Overwrite,
-  FileAtTarget = Collision | Backup,
-  SymlinkAtTarget = Collision | Fatal,
-  Forced = Nothing | Overwrite,
-}
-
 interface ValidationError {
   type: "error";
   category: "fatal_collision" | "missing_source" | "type_mismatch";
@@ -132,15 +115,9 @@ interface ValidationWarning {
     | "unexpected_type"
     | "cleanup_mismatch";
   message: string;
-  entry?: ManifestEntry;
+  entry?: ManifestEntry | StashFileEntry;
   path: string;
   details?: string;
-}
-
-interface ValidationResult {
-  errors: ValidationError[];
-  warnings: ValidationWarning[];
-  checkedFiles: Array<{ entry: ManifestEntry; collision: CollisionType }>;
 }
 
 interface GenerationMeta {
@@ -193,8 +170,7 @@ const oldManifest = await getFileOrNull(
   },
 );
 
-// Old generation configuration is currently not used in the new manifest-based
-// collision logic, but we keep the path reserved for possible future use.
+// currently unused
 const oldGenConfig = await getFileOrNull(
   oldGenDataPath,
   async (_) => {

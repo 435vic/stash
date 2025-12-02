@@ -40,20 +40,21 @@
           ...
         }:
         let
-          activationTester = import ./tests/test-activation.nix { inherit pkgs; };
+          activationTester = import ./tests/activation { inherit pkgs; };
+          vmTests = import ./tests/vm { inherit pkgs; };
         in
         {
           nix-unit.inputs = {
             inherit (inputs) nixpkgs nix-unit flake-parts;
           };
 
-          checks = activationTester.tests;
+          checks = activationTester.tests // vmTests.tests;
 
-          legacyPackages = { inherit activationTester; };
+          legacyPackages = { inherit activationTester vmTests; };
 
           nix-unit.tests =
             let
-              moduleTests = import ./tests/module {
+              moduleTests = import ./tests/module-eval {
                 inherit pkgs;
                 module = ./modules;
               };

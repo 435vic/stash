@@ -61,9 +61,6 @@ let
         name = sourceName;
       };
 
-  # TODO: custom path type with apply
-  # can be an absolute path starting with the specified base,
-  # or a relative path interpreted as starting with the specified base
   pathWithBase = types.pathWith { absolute = false; };
   fileType = types.attrsOf (
     types.submodule (
@@ -180,7 +177,7 @@ let
     in
     types.attrsOf (
       types.submodule (
-        { name, config, ... }:
+        { name, ... }:
         {
           options = {
             name = mkOption {
