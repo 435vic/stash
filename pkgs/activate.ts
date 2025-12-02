@@ -1055,7 +1055,7 @@ async function makeGcRoot(derivation: string, rootPath: string) {
     return;
   }
 
-  const command = new Deno.Command("nix-store", {
+  const command = new Deno.Command("/run/current-system/sw/bin/nix-store", {
     args: [
       "--realise",
       derivation,

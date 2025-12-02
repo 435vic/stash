@@ -336,6 +336,72 @@ in
           '';
         }) stashFiles;
 
+        # 5. Target path cannot be inside a stash folder
+        stashRelPaths = lib.filter (p: p != null) (
+          lib.mapAttrsToList (
+            _: stash:
+            let
+              stashPath = stash.path;
+            in
+            if lib.hasPrefix (config.homeDirectory + "/") stashPath then
+              lib.removePrefix (config.homeDirectory + "/") stashPath
+            else
+              null
+          ) config.stashes
+        );
+
+        targetNotInStashAssertions = lib.mapAttrsToList (
+          n: f:
+          let
+            targetPath = f.target;
+            matchingStash = lib.findFirst (
+              stashRel: targetPath == stashRel || lib.hasPrefix (stashRel + "/") targetPath
+            ) null stashRelPaths;
+          in
+          {
+            assertion = matchingStash == null;
+            type = "target.inside-stash";
+            entry = n;
+            target = f.target;
+            stash = matchingStash;
+            message = ''
+              The target path "${f.target}" for file entry "${n}" is inside or equal to a stash folder "${
+                if matchingStash != null then matchingStash else ""
+              }".
+              Symlinks cannot be created inside stash folders.
+            '';
+          }
+        ) config.files;
+
+        # 6. Target path cannot be inside a recursive entry's target
+        recursiveTargets = lib.mapAttrsToList (_: f: f.target) (
+          lib.filterAttrs (_: f: f.recursive) config.files
+        );
+
+        targetNotInRecursiveAssertions = lib.mapAttrsToList (
+          n: f:
+          let
+            targetPath = f.target;
+            # A target is invalid if it's strictly inside another recursive target (not equal)
+            matchingRecursive = lib.findFirst (
+              recTarget: lib.hasPrefix (recTarget + "/") targetPath
+            ) null recursiveTargets;
+          in
+          {
+            assertion = matchingRecursive == null;
+            type = "target.inside-recursive";
+            entry = n;
+            target = f.target;
+            recursiveTarget = matchingRecursive;
+            message = ''
+              The target path "${f.target}" for file entry "${n}" is inside a recursive folder target "${
+                if matchingRecursive != null then matchingRecursive else ""
+              }".
+              Symlinks cannot be created inside folders managed by recursive entries.
+            '';
+          }
+        ) config.files;
+
       in
       mkMerge [
         validStashRefs
@@ -343,6 +409,8 @@ in
         recursiveFileAssertions
         targetPathSafetyAssertions
         stashSourcePathSafetyAssertions
+        targetNotInStashAssertions
+        targetNotInRecursiveAssertions
       ];
 
     staticFileDerivation = mkIf (staticFiles != { }) (

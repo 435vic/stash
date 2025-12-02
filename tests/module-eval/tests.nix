@@ -637,4 +637,272 @@
       expected = [ ];
     };
   };
+
+  # Target inside stash tests
+  targetInsideStash-fail-exact-match = {
+    config = {
+      homeDirectory = "/home/test";
+      stashes."my-stash".path = "dotfiles";
+      files."bad-file" = {
+        source = "/dev/null";
+        target = "dotfiles";
+      };
+    };
+    "test should fail when target equals stash path" = {
+      expr =
+        cfg:
+        builtins.map (
+          a:
+          builtins.removeAttrs a [
+            "assertion"
+            "message"
+          ]
+        ) (builtins.filter (a: !a.assertion && a.type == "target.inside-stash") cfg.assertions);
+      expected = [
+        {
+          type = "target.inside-stash";
+          entry = "bad-file";
+          target = "dotfiles";
+          stash = "dotfiles";
+        }
+      ];
+    };
+  };
+
+  targetInsideStash-fail-inside = {
+    config = {
+      homeDirectory = "/home/test";
+      stashes."my-stash".path = "dotfiles";
+      files."bad-file" = {
+        source = "/dev/null";
+        target = "dotfiles/config/file.txt";
+      };
+    };
+    "test should fail when target is inside stash folder" = {
+      expr =
+        cfg:
+        builtins.map (
+          a:
+          builtins.removeAttrs a [
+            "assertion"
+            "message"
+          ]
+        ) (builtins.filter (a: !a.assertion && a.type == "target.inside-stash") cfg.assertions);
+      expected = [
+        {
+          type = "target.inside-stash";
+          entry = "bad-file";
+          target = "dotfiles/config/file.txt";
+          stash = "dotfiles";
+        }
+      ];
+    };
+  };
+
+  targetInsideStash-pass-similar-prefix = {
+    config = {
+      homeDirectory = "/home/test";
+      stashes."my-stash".path = "dotfiles";
+      files."ok-file" = {
+        source = "/dev/null";
+        target = "dotfilesother/file.txt";
+      };
+    };
+    "test should pass when target has similar prefix but is not inside stash" = {
+      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-stash") cfg.assertions;
+      expected = [ ];
+    };
+  };
+
+  targetInsideStash-pass-outside = {
+    config = {
+      homeDirectory = "/home/test";
+      stashes."my-stash".path = "dotfiles";
+      files."ok-file" = {
+        source = "/dev/null";
+        target = ".config/something";
+      };
+    };
+    "test should pass when target is outside stash folder" = {
+      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-stash") cfg.assertions;
+      expected = [ ];
+    };
+  };
+
+  targetInsideStash-absolute-stash-outside-home = {
+    config = {
+      homeDirectory = "/home/test";
+      stashes."my-stash".path = "/opt/dotfiles";
+      files."ok-file" = {
+        source = "/dev/null";
+        target = "opt/dotfiles/file.txt";
+      };
+    };
+    "test should pass when stash is absolute path outside home" = {
+      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-stash") cfg.assertions;
+      expected = [ ];
+    };
+  };
+
+  # Target inside recursive folder tests
+  targetInsideRecursive-fail = {
+    config = {
+      homeDirectory = "/home/test";
+      files = {
+        "nvim-config" = {
+          source = ./.;
+          target = ".config/nvim";
+          recursive = true;
+        };
+        "bad-file" = {
+          source = "/dev/null";
+          target = ".config/nvim/lua/plugins.lua";
+        };
+      };
+    };
+    "test should fail when target is inside recursive folder target" = {
+      expr =
+        cfg:
+        builtins.map (
+          a:
+          builtins.removeAttrs a [
+            "assertion"
+            "message"
+          ]
+        ) (builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions);
+      expected = [
+        {
+          type = "target.inside-recursive";
+          entry = "bad-file";
+          target = ".config/nvim/lua/plugins.lua";
+          recursiveTarget = ".config/nvim";
+        }
+      ];
+    };
+  };
+
+  targetInsideRecursive-pass-same-target = {
+    config = {
+      homeDirectory = "/home/test";
+      files."nvim-config" = {
+        source = ./.;
+        target = ".config/nvim";
+        recursive = true;
+      };
+    };
+    "test should pass for the recursive entry itself" = {
+      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions;
+      expected = [ ];
+    };
+  };
+
+  targetInsideRecursive-pass-sibling = {
+    config = {
+      homeDirectory = "/home/test";
+      files = {
+        "nvim-config" = {
+          source = ./.;
+          target = ".config/nvim";
+          recursive = true;
+        };
+        "ok-file" = {
+          source = "/dev/null";
+          target = ".config/other/file.txt";
+        };
+      };
+    };
+    "test should pass when target is sibling of recursive folder" = {
+      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions;
+      expected = [ ];
+    };
+  };
+
+  targetInsideRecursive-pass-similar-prefix = {
+    config = {
+      homeDirectory = "/home/test";
+      files = {
+        "nvim-config" = {
+          source = ./.;
+          target = ".config/nvim";
+          recursive = true;
+        };
+        "ok-file" = {
+          source = "/dev/null";
+          target = ".config/nvim-extra/file.txt";
+        };
+      };
+    };
+    "test should pass when target has similar prefix but is not inside" = {
+      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions;
+      expected = [ ];
+    };
+  };
+
+  targetInsideRecursive-multiple-recursive = {
+    config = {
+      homeDirectory = "/home/test";
+      files = {
+        "nvim-config" = {
+          source = ./.;
+          target = ".config/nvim";
+          recursive = true;
+        };
+        "tmux-config" = {
+          source = ./.;
+          target = ".config/tmux";
+          recursive = true;
+        };
+        "bad-file" = {
+          source = "/dev/null";
+          target = ".config/tmux/plugins/tpm.conf";
+        };
+      };
+    };
+    "test should fail when target is inside any recursive folder" = {
+      expr =
+        cfg:
+        builtins.map (
+          a:
+          builtins.removeAttrs a [
+            "assertion"
+            "message"
+          ]
+        ) (builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions);
+      expected = [
+        {
+          type = "target.inside-recursive";
+          entry = "bad-file";
+          target = ".config/tmux/plugins/tpm.conf";
+          recursiveTarget = ".config/tmux";
+        }
+      ];
+    };
+  };
+
+  # Combined stash and recursive checks
+  targetInsideStashAndRecursive-both-pass = {
+    config = {
+      homeDirectory = "/home/test";
+      stashes."my-stash".path = "dotfiles";
+      files = {
+        "nvim-config" = {
+          source = ./.;
+          target = ".config/nvim";
+          recursive = true;
+        };
+        "ok-file" = {
+          source = "/dev/null";
+          target = ".local/share/something";
+        };
+      };
+    };
+    "test should pass when target is outside both stash and recursive folders" = {
+      expr =
+        cfg:
+        builtins.filter (
+          a: !a.assertion && (a.type == "target.inside-stash" || a.type == "target.inside-recursive")
+        ) cfg.assertions;
+      expected = [ ];
+    };
+  };
 }

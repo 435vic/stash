@@ -5,7 +5,7 @@
 }:
 let
   # Default test user configuration
-  testUser = "stash-test";
+  testUser = "tester";
   testUserHome = "/home/${testUser}";
 
   # Helper to run a NixOS VM test with stash pre-configured
@@ -49,19 +49,41 @@ let
           security.sudo.wheelNeedsPassword = false;
 
           stash.users.${testUser} = stashConfig;
+
+          # Setup service that runs before stash activation
+          # This creates stash directories and files needed for the test
+          systemd.services."stash-test-setup-${testUser}" = lib.mkIf (preStashSetup != "") {
+            description = "Pre-stash setup for ${testUser}";
+            wantedBy = [ "multi-user.target" ];
+            before = [ "stash-${testUser}.service" ];
+            after = [ "local-fs.target" ];
+
+            unitConfig = {
+              RequiresMountsFor = testUserHome;
+            };
+
+            serviceConfig = {
+              Type = "oneshot";
+              User = testUser;
+              Group = "users";
+              RemainAfterExit = true;
+            };
+
+            script = preStashSetup;
+          };
+
+          # Make stash service wait for the setup service
+          systemd.services."stash-${testUser}" = lib.mkIf (preStashSetup != "") {
+            after = [ "stash-test-setup-${testUser}.service" ];
+            requires = [ "stash-test-setup-${testUser}.service" ];
+          };
         }
         // (builtins.removeAttrs extraConfig [ "imports" ]);
 
       testScript = ''
         machine.start()
-        machine.wait_for_unit("multi-user.target")
 
-        ${lib.optionalString (preStashSetup != "") ''
-          # Run pre-stash setup as test user
-          machine.succeed("sudo -u ${testUser} bash -c '${preStashSetup}'")
-        ''}
-
-        # Wait for stash activation service
+        # Wait for stash activation service (+ dependencies) to complete
         machine.wait_for_unit("stash-${testUser}.service")
 
         ${testScript}

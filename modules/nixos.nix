@@ -32,6 +32,7 @@ let
       serviceConfig = {
         User = username;
         Type = "oneshot";
+        RemainAfterExit = true;
         TimeoutStartSec = "5m";
         SyslogIdentifier = "stash-activate-${username}";
         ExecStart = "${config.lib.stash.packages.stash-activate}/bin/stash-activate ${generationPackage}";

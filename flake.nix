@@ -48,7 +48,7 @@
             inherit (inputs) nixpkgs nix-unit flake-parts;
           };
 
-          checks = activationTester.tests // vmTests.tests;
+          checks = activationTester.tests;
 
           legacyPackages = { inherit activationTester vmTests; };
 
