@@ -50,7 +50,17 @@
 
           checks = activationTester.tests;
 
-          legacyPackages = { inherit activationTester vmTests; };
+          legacyPackages = {
+            inherit activationTester;
+            vmTests = vmTests // {
+              all = pkgs.runCommand "vm-tests-all" { } ''
+                mkdir -p $out
+                ${pkgs.lib.concatStringsSep "\n" (
+                  pkgs.lib.mapAttrsToList (name: drv: "ln -s ${drv} $out/${name}") vmTests.tests
+                )}
+              '';
+            };
+          };
 
           nix-unit.tests =
             let
