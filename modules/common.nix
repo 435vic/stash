@@ -37,7 +37,9 @@
                 (
                   { name, ... }:
                   {
-                    config = getUserConfig name;
+                    config = getUserConfig name // {
+                      activateScript = stashPkgs.stash-activate;
+                    };
                   }
                 )
               ];

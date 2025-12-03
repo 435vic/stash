@@ -2758,10 +2758,263 @@ in
             if ! grep -q "bindings = vim" "config/app/keys.toml"; then
               echo "Gen3: keys.toml should still be from stash"
               exit 1
-            fi
+              fi
           '';
         }
       ];
+    };
+
+    # ==========================================================================
+    # Sync Feature Tests
+    # ==========================================================================
+    # These tests verify the sync functionality: that the generation package
+    # contains the activation script and that running activation via the
+    # embedded script works correctly.
+
+    # Test that the generation package contains the activate symlink
+    test-generation-package-contains-activate = mkActivationTest {
+      name = "generation-package-contains-activate";
+
+      newGen = {
+        files."config/test.toml" = {
+          text = "test = true";
+        };
+      };
+
+      preActivation = ''
+        # Verify the generation package structure before activation
+        echo "Checking generation package structure..."
+
+        if [ ! -x "$newGenPath/activate" ]; then
+          echo "ERROR: $newGenPath/activate does not exist or is not executable"
+          exit 1
+        fi
+
+        # Verify it's a wrapper script (not a symlink to a directory)
+        if [ -d "$newGenPath/activate" ]; then
+          echo "ERROR: $newGenPath/activate should be a wrapper script, not a directory"
+          exit 1
+        fi
+
+        # Verify the wrapper contains the generation path
+        if ! grep -q "$newGenPath" "$newGenPath/activate"; then
+          echo "ERROR: activate wrapper should contain the generation path"
+          exit 1
+        fi
+
+        echo "Generation package structure is correct"
+      '';
+
+      postActivation = ''
+        # Verify the symlink was created
+        if [ ! -L "config/test.toml" ]; then
+          echo "ERROR: config/test.toml symlink was not created"
+          exit 1
+        fi
+      '';
+    };
+
+    # Test sync workflow: activate using the embedded script (simulates stash sync)
+    test-sync-workflow-new-files = mkMultiGenerationTest {
+      name = "sync-workflow-new-files";
+
+      homeFiles = {
+        # Initial stash content
+        "dotfiles/app/settings.toml".content = "setting = 1";
+      };
+
+      generations = [
+        {
+          description = "Initial activation with recursive stash";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            # Verify initial symlink
+            if [ ! -L "config/app/settings.toml" ]; then
+              echo "ERROR: Initial symlink not created"
+              exit 1
+            fi
+
+            # Simulate adding a new file to the stash (like user editing their config)
+            echo "new_setting = 2" > "$HOME/dotfiles/app/new-file.toml"
+            echo "Added new file to stash"
+
+            # Verify the new file exists but is NOT yet symlinked
+            if [ -L "config/app/new-file.toml" ]; then
+              echo "ERROR: new-file.toml should not be symlinked yet"
+              exit 1
+            fi
+          '';
+        }
+        {
+          description = "Sync: re-run activation to pick up new file";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            # After sync, the new file should now be symlinked
+            if [ ! -L "config/app/new-file.toml" ]; then
+              echo "ERROR: new-file.toml should be symlinked after sync"
+              exit 1
+            fi
+
+            # Verify it points to the right place
+            target=$(readlink "config/app/new-file.toml")
+            expected="$HOME/dotfiles/app/new-file.toml"
+            if [ "$target" != "$expected" ]; then
+              echo "ERROR: new-file.toml points to $target, expected $expected"
+              exit 1
+            fi
+
+            # Original file should still be there
+            if [ ! -L "config/app/settings.toml" ]; then
+              echo "ERROR: Original settings.toml symlink missing"
+              exit 1
+            fi
+
+            echo "Sync successfully picked up new file"
+          '';
+        }
+      ];
+    };
+
+    # Test sync workflow: removed files are cleaned up
+    test-sync-workflow-removed-files = mkMultiGenerationTest {
+      name = "sync-workflow-removed-files";
+
+      homeFiles = {
+        "dotfiles/app/keep.toml".content = "keep = true";
+        "dotfiles/app/remove-me.toml".content = "remove = true";
+      };
+
+      generations = [
+        {
+          description = "Initial activation with two files";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            # Verify both symlinks exist
+            if [ ! -L "config/app/keep.toml" ]; then
+              echo "ERROR: keep.toml symlink not created"
+              exit 1
+            fi
+            if [ ! -L "config/app/remove-me.toml" ]; then
+              echo "ERROR: remove-me.toml symlink not created"
+              exit 1
+            fi
+
+            # Simulate user deleting a file from the stash
+            rm "$HOME/dotfiles/app/remove-me.toml"
+            echo "Removed file from stash"
+          '';
+        }
+        {
+          description = "Sync: re-run activation to clean up removed file";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            # After sync, the removed file's symlink should be gone
+            if [ -e "config/app/remove-me.toml" ]; then
+              echo "ERROR: remove-me.toml should have been cleaned up"
+              exit 1
+            fi
+
+            # The kept file should still be there
+            if [ ! -L "config/app/keep.toml" ]; then
+              echo "ERROR: keep.toml symlink should still exist"
+              exit 1
+            fi
+
+            echo "Sync successfully cleaned up removed file"
+          '';
+        }
+      ];
+    };
+
+    # Test that running the embedded activation script directly works
+    test-sync-via-embedded-script = mkActivationTest {
+      name = "sync-via-embedded-script";
+
+      homeFiles = {
+        "dotfiles/app/test.toml".content = "embedded = true";
+      };
+
+      newGen = {
+        stashes.myStash.path = "dotfiles";
+        files."config/app" = {
+          source = {
+            static = false;
+            stash = "myStash";
+            path = "app";
+          };
+          recursive = true;
+        };
+      };
+
+      preActivation = ''
+        # Instead of using the test wrapper, run activation via the embedded script
+        # This simulates what `stash sync` does
+        echo "Running activation via embedded script..."
+
+        export STASH_TEST_MODE=1
+        "$newGenPath/activate"
+
+        echo "Embedded script activation completed"
+
+        # Verify the symlink was created
+        if [ ! -L "$HOME/config/app/test.toml" ]; then
+          echo "ERROR: Symlink not created by embedded script"
+          exit 1
+        fi
+
+        target=$(readlink "$HOME/config/app/test.toml")
+        expected="$HOME/dotfiles/app/test.toml"
+        if [ "$target" != "$expected" ]; then
+          echo "ERROR: Symlink points to $target, expected $expected"
+          exit 1
+        fi
+
+        echo "Embedded script successfully created symlinks"
+
+        # Create output directory and skip the normal activation since we already ran it
+        mkdir -p $out
+        exit 0
+      '';
     };
   };
 }

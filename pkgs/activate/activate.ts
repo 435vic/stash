@@ -58,9 +58,27 @@ interface StashFileEntry {
   source: StashFileSource;
 }
 
+interface StashInitSource {
+  type: "git" | "tarball" | "zip";
+  url: string;
+  ref: string | null;
+  stripComponents: number;
+}
+
+interface StashInit {
+  enable: boolean;
+  source: StashInitSource;
+}
+
+interface StashConfig {
+  name: string;
+  path: string;
+  init: StashInit;
+}
+
 interface StashGenerationConfig {
   files: Record<string, StashFileEntry>;
-  stashes: Record<string, { name: string; path: string }>;
+  stashes: Record<string, StashConfig>;
 }
 
 interface ManifestEntry {

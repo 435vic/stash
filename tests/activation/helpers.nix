@@ -50,6 +50,7 @@ rec {
           {
             homeDirectory = testHome;
             user = testUser;
+            activateScript = stashPkgs.stash-activate;
           }
         ];
         specialArgs = {

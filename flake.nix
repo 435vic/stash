@@ -1,5 +1,5 @@
 {
-  description = "A very basic flake";
+  description = "Stash: cool dotfiles manager";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -42,8 +42,14 @@
         let
           activationTester = import ./tests/activation { inherit pkgs; };
           vmTests = import ./tests/vm { inherit pkgs; };
+          stashPkgs = import ./pkgs { inherit pkgs; };
         in
         {
+          packages = {
+            stash-cli = stashPkgs.stash-cli;
+            stash-activate = stashPkgs.stash-activate;
+          };
+
           nix-unit.inputs = {
             inherit (inputs) nixpkgs nix-unit flake-parts;
           };

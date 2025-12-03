@@ -12,51 +12,232 @@ Stash is my proposal for a hybrid approach, supporting static/immutable symlinks
 
 Like Home Manager, Stash leverages Nix generations to track state as much as possible. Immutable files are always tracked, both in content and location. For mutable files, the exact symlinks created are tracked, but not the content of these files.
 
-## Architecture Overview
+## Quick Start
 
-### Core Components
+Add Stash to your flake inputs:
 
-**NixOS Module System** (`modules/`)
-- Defines the configuration schema for users, stashes, and files
-- Integrates with the NixOS module system as a top-level `stash.users.<user>` option
-- Validates configuration and generates activation packages
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    stash.url = "github:435vic/stash";
+    stash.inputs.nixpkgs.follows = "nixpkgs";
+  };
 
-**Stashes**
-- Named filesystem locations that serve as sources for configuration files
-- Typically point to directories containing dotfiles (e.g., a Git repository)
-- Resolved at activation time, allowing them to be mutable
+  outputs = { nixpkgs, stash, ... }: {
+    nixosConfigurations.your-hostname = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        stash.nixosModules.default  # or ./path/to/stash/modules/nixos.nix
+        ./configuration.nix
+      ];
+    };
+  };
+}
+```
 
-**File Management**
-- Each file entry specifies a source (static or from a stash) and a target location
-- Supports both individual files and recursive directory linking
-- Includes options for forcing overwrites and handling conflicts
+Then configure Stash for your user in your NixOS configuration:
 
-**Activation Script** (`modules/activate.ts`)
-- TypeScript/Deno-based runtime that performs the actual symlinking
-- Handles collision detection with existing files
-- Creates backups of user files when appropriate
-- Maintains a manifest of managed symlinks for proper cleanup
-- Cleans up symlinks from previous generations
+```nix
+{ config, ... }:
+{
+  stash.users.alice = {
+    # Define a stash - a mutable directory in your home
+    stashes.dotfiles = {
+      path = "dotfiles";  # Will resolve to /home/alice/dotfiles
+    };
 
-### Data Flow
+    files = {
+      # Static file from inline text (like Home Manager)
+      ".bashrc".text = ''
+        export PATH="$HOME/.local/bin:$PATH"
+      '';
 
-1. **Configuration**: User defines stashes and files in their NixOS configuration
-2. **Build**: Nix evaluates the configuration and produces a generation package containing:
-   - Static files in the Nix store
-   - A JSON manifest describing all file management operations
-3. **Activation**: The activation script runs at system activation time:
-   - Checks for collisions with existing files
-   - Backs up or removes old generation's symlinks
-   - Creates new symlinks pointing to sources (store paths or stash locations)
-   - Updates the manifest for future generations
+      # Dynamic file from a stash (mutable, no rebuild needed)
+      ".config/hyprland" = {
+        source = config.lib.stash.fromStash {
+          stash = "dotfiles";
+          path = "hyprland";
+        };
+        recursive = true;  # Link all files in the directory
+      };
+    };
+  };
+}
+```
 
-### Testing
+## Usage
 
-The project includes both unit tests (using nix-unit) and integration tests (using NixOS VM tests) to ensure correct behavior across various scenarios including collision handling, generation transitions, and edge cases.
+### Static Files
 
-## Design Philosophy
+Static files work similarly to Home Manager's `home.file`. They are copied to the Nix store at build time and symlinked to your home directory:
 
-- **Generation-aware**: Properly integrates with NixOS's generation model for rollbacks and cleanup
-- **Safe by default**: Detects conflicts and creates backups to avoid data loss
-- **Flexible sourcing**: Supports both immutable (Nix store) and mutable (filesystem) sources
-- **Atomic operations**: Uses atomic symlink replacement to avoid partial states
+```nix
+stash.users.alice.files = {
+  # Inline text content
+  "scripts/hello.sh" = {
+    text = ''
+      #!/bin/bash
+      echo "Hello, world!"
+    '';
+    executable = true;
+  };
+
+  # From a path (copied to Nix store)
+  ".config/someapp/config.toml".source = ./configs/someapp.toml;
+
+  # Recursively link a directory
+  ".config/nvim" = {
+    source = ./nvim-config;
+    recursive = true;
+  };
+};
+```
+
+### Stashes and Dynamic Files
+
+Stashes are directories in your home folder that contain mutable configuration files. You can reference files within stashes to create symlinks that don't require a rebuild when the source files change:
+
+```nix
+stash.users.alice = {
+  # Define your stashes
+  stashes = {
+    dotfiles.path = "dotfiles";           # ~/dotfiles
+    wallpapers.path = "Pictures/walls";   # ~/Pictures/walls
+  };
+
+  files = {
+    # Link a single file from a stash
+    ".config/kitty/kitty.conf" = {
+      source = config.lib.stash.fromStash {
+        stash = "dotfiles";
+        path = "kitty/kitty.conf";
+      };
+    };
+
+    # Recursively link a directory from a stash
+    # When files are added/removed, run `stash sync` to update symlinks
+    ".config/hyprland" = {
+      source = config.lib.stash.fromStash {
+        stash = "dotfiles";
+        path = "hyprland";
+      };
+      recursive = true;
+    };
+
+    # Link an entire stash directory recursively
+    ".config/nvim" = {
+      source = config.lib.stash.fromStash {
+        stash = "dotfiles";
+        path = "nvim";
+      };
+      recursive = true;
+    };
+
+    # Link a wallpaper
+    "Pictures/current-wallpaper.png" = {
+      source = config.lib.stash.fromStash {
+        stash = "wallpapers";
+        path = "forest.png";
+      };
+    };
+  };
+};
+```
+
+### Automatic Stash Initialization
+
+For fresh system deployments, you can configure stashes to be automatically initialized from a remote source:
+
+```nix
+stash.users.alice.stashes = {
+  dotfiles = {
+    path = "dotfiles";
+    init = {
+      enable = true;
+      source = {
+        type = "git";
+        url = "https://github.com/alice/dotfiles.git";
+        ref = "main";  # Optional: branch, tag, or commit
+      };
+    };
+  };
+
+  # From a tarball
+  wallpapers = {
+    path = "Pictures/wallpapers";
+    init = {
+      enable = true;
+      source = {
+        type = "tarball";
+        url = "https://example.com/wallpapers.tar.gz";
+        stripComponents = 1;  # Strip the top-level directory
+      };
+    };
+  };
+};
+```
+
+The initialization runs as a separate systemd unit after the network is available and doesn't block boot.
+
+### Syncing Changes
+
+When you add or remove files in a recursively-linked stash directory, you can update the symlinks without a full NixOS rebuild:
+
+```bash
+stash sync
+```
+
+This re-runs the activation script using the current generation's configuration.
+
+## Configuration Reference
+
+### `stash.users.<name>.stashes`
+
+Defines stash directories for a user.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `path` | string | — | Path to the stash, relative to home or absolute |
+| `init.enable` | bool | `false` | Enable automatic initialization from remote |
+| `init.source.type` | enum | `"git"` | Source type: `"git"`, `"tarball"`, or `"zip"` |
+| `init.source.url` | string | `""` | URL to fetch from |
+| `init.source.ref` | string | `null` | Git ref to checkout (git only) |
+| `init.source.stripComponents` | int | `0` | Path components to strip (tarball/zip only) |
+
+### `stash.users.<name>.files`
+
+Defines files to be symlinked to the user's home directory.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable` | bool | `true` | Whether to create this file |
+| `source` | path/string/attrset | — | Source of the file content |
+| `text` | string | `null` | Inline text content (alternative to source) |
+| `recursive` | bool | `false` | Recursively link directory contents |
+| `executable` | bool | `false` | Make the file executable |
+| `forced` | bool | `false` | Overwrite existing files |
+
+### `config.lib.stash.fromStash`
+
+Helper function to create a stash source reference:
+
+```nix
+config.lib.stash.fromStash {
+  stash = "stash-name";  # Name of the stash
+  path = "relative/path";  # Path within the stash
+}
+```
+
+## How It Works
+
+1. **Build time**: Static files are collected into a derivation and stored in the Nix store. Stash file declarations are recorded but their contents aren't stored.
+
+2. **Activation**: A systemd service runs on boot/switch that:
+   - Creates symlinks for static files pointing to the Nix store
+   - Creates symlinks for stash files pointing to the actual files in your home directory
+   - For recursive entries, walks the source directory and creates individual symlinks
+
+3. **Sync**: The `stash sync` command re-runs activation to pick up new files in recursively-linked directories.
+
+4. **Generations**: Each activation creates a new generation, allowing rollbacks. The current generation is tracked via a gcroot symlink at `~/.local/state/stash/gcroots/current-home`.

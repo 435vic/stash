@@ -196,11 +196,57 @@ let
                   Whether to enable automatic initialization of the stash. When deploying to a new system,
                   the filesystem will be empty. The `init` options allow specifying how and from where an
                   initial source will be fetched from.
+
+                  When enabled, a separate systemd unit will be created that fetches the source after
+                  network is available, then runs `stash sync` to create the symlinks. This unit does
+                  not block boot.
                 '';
               };
 
-              # WIP: need to add options to specify where to pull the initial files from
-              # could be tarball, or an actual git repo
+              source = {
+                type = mkOption {
+                  type = types.enum [
+                    "git"
+                    "tarball"
+                    "zip"
+                  ];
+                  default = "git";
+                  description = ''
+                    Type of remote source to fetch from.
+                    - git: Clone a git repository
+                    - tarball: Download and extract a .tar.gz archive
+                    - zip: Download and extract a .zip archive
+                  '';
+                };
+
+                url = mkOption {
+                  type = types.str;
+                  default = "";
+                  description = ''
+                    URL to fetch the stash contents from.
+                    For git, this is the repository URL.
+                    For tarball/zip, this is the download URL.
+                  '';
+                };
+
+                ref = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = ''
+                    Git ref (branch, tag, or commit) to checkout.
+                    Only used when source.type is "git".
+                  '';
+                };
+
+                stripComponents = mkOption {
+                  type = types.int;
+                  default = 0;
+                  description = ''
+                    Number of leading path components to strip when extracting.
+                    Only used for tarball and zip sources.
+                  '';
+                };
+              };
             };
 
             path = mkOption {
@@ -265,6 +311,12 @@ in
       internal = true;
       description = "State of stash-managed links";
       default = null;
+    };
+
+    activateScript = mkOption {
+      type = types.package;
+      internal = true;
+      description = "The activation script package for this user";
     };
 
     generationPackage = mkOption {
@@ -402,6 +454,17 @@ in
           }
         ) config.files;
 
+        # 7. Init source URL must be set when init.enable is true
+        initUrlAssertions = lib.mapAttrsToList (name: stash: {
+          assertion = !stash.init.enable || stash.init.source.url != "";
+          type = "stash.init-missing-url";
+          stash = name;
+          message = ''
+            Stash "${name}" has init.enable = true but init.source.url is not set.
+            Please specify a URL to fetch the initial stash contents from.
+          '';
+        }) config.stashes;
+
       in
       mkMerge [
         validStashRefs
@@ -411,6 +474,7 @@ in
         stashSourcePathSafetyAssertions
         targetNotInStashAssertions
         targetNotInRecursiveAssertions
+        initUrlAssertions
       ];
 
     staticFileDerivation = mkIf (staticFiles != { }) (
@@ -523,6 +587,15 @@ in
           value = {
             name = stashCfg.name;
             path = stashCfg.path;
+            init = {
+              enable = stashCfg.init.enable;
+              source = {
+                type = stashCfg.init.source.type;
+                url = stashCfg.init.source.url;
+                ref = stashCfg.init.source.ref;
+                stripComponents = stashCfg.init.source.stripComponents;
+              };
+            };
           };
         }) config.stashes;
       in
@@ -540,14 +613,19 @@ in
           }
         );
       in
-      pkgs.runCommandLocal "stash" { } ''
-        mkdir -p $out
+      pkgs.runCommandLocal "stash"
+        {
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+        }
+        ''
+          mkdir -p $out
 
-        ${lib.optionalString (staticFiles != { }) "ln -s ${config.staticFileDerivation} $out/static-files"}
-        ln -s ${config.stashStateDerivation} $out/stash.json
-        ln -s ${metaDerivation} $out/meta.json
+          ${lib.optionalString (staticFiles != { }) "ln -s ${config.staticFileDerivation} $out/static-files"}
+          ln -s ${config.stashStateDerivation} $out/stash.json
+          ln -s ${metaDerivation} $out/meta.json
 
-        # possible home manager extra commands?
-      '';
+          makeWrapper ${config.activateScript}/bin/stash-activate $out/activate \
+            --add-flags "$out"
+        '';
   };
 }
