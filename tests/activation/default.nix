@@ -2,6 +2,7 @@ args:
 let
   inherit (import ./helpers.nix args)
     mkActivationTest
+    mkMultiGenerationTest
     ;
 in
 {
@@ -2069,6 +2070,698 @@ in
           exit 1
         fi
       '';
+    };
+
+    # =========================================================================
+    # Multi-Generation Tests: Complex Transitions Over Multiple Generations
+    # =========================================================================
+
+    # Test 1: File Lifecycle - Add, Modify, Remove over 3 generations
+    test-multi-gen-file-lifecycle = mkMultiGenerationTest {
+      name = "test-multi-gen-file-lifecycle";
+
+      homeFiles = {
+        "dotfiles/settings.toml".content = "version = 1";
+      };
+
+      generations = [
+        # Generation 1: Add a static file
+        {
+          description = "Add initial static file";
+          config = {
+            files."config/app.toml" = {
+              text = "app_version = 1\nenabled = true";
+            };
+          };
+          postActivation = ''
+            if [ ! -L "config/app.toml" ]; then
+              echo "Gen1: Expected app.toml to be a symlink"
+              exit 1
+            fi
+            if ! grep -q "app_version = 1" "config/app.toml"; then
+              echo "Gen1: Wrong content in app.toml"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: Update the static file content
+        {
+          description = "Update static file content";
+          config = {
+            files."config/app.toml" = {
+              text = "app_version = 2\nenabled = true\nnew_feature = true";
+            };
+          };
+          postActivation = ''
+            if ! grep -q "app_version = 2" "config/app.toml"; then
+              echo "Gen2: Content should be updated to version 2"
+              exit 1
+            fi
+            if ! grep -q "new_feature" "config/app.toml"; then
+              echo "Gen2: Missing new_feature in app.toml"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 3: Remove the file
+        {
+          description = "Remove the file";
+          config = {
+            files = { };
+          };
+          postActivation = ''
+            if [ -e "config/app.toml" ]; then
+              echo "Gen3: app.toml should have been removed"
+              exit 1
+            fi
+          '';
+        }
+      ];
+    };
+
+    # Test 2: Recursive to Non-Recursive to Recursive transitions
+    test-multi-gen-recursive-mode-transitions = mkMultiGenerationTest {
+      name = "test-multi-gen-recursive-mode-transitions";
+
+      homeFiles = {
+        "dotfiles/app-config/file1.toml".content = "file1 = true";
+        "dotfiles/app-config/file2.toml".content = "file2 = true";
+        "dotfiles/app-config/subdir/nested.toml".content = "nested = true";
+      };
+
+      generations = [
+        # Generation 1: Recursive - individual file symlinks
+        {
+          description = "Recursive mode - individual symlinks";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/app-config";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            if [ -L "config/app" ]; then
+              echo "Gen1: config/app should be a directory, not symlink"
+              exit 1
+            fi
+            if [ ! -L "config/app/file1.toml" ]; then
+              echo "Gen1: file1.toml should be a symlink"
+              exit 1
+            fi
+            if [ ! -L "config/app/subdir/nested.toml" ]; then
+              echo "Gen1: nested.toml should be a symlink"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: Non-recursive - entire directory symlink
+        {
+          description = "Non-recursive mode - directory symlink";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/app-config";
+              };
+              recursive = false;
+            };
+          };
+          postActivation = ''
+            if [ ! -L "config/app" ]; then
+              echo "Gen2: config/app should be a symlink"
+              exit 1
+            fi
+            resolved=$(readlink -f "config/app")
+            expected=$(readlink -f "dotfiles/app-config")
+            if [ "$resolved" != "$expected" ]; then
+              echo "Gen2: Symlink points to wrong location"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 3: Back to recursive
+        {
+          description = "Back to recursive mode";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/app-config";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            if [ -L "config/app" ]; then
+              echo "Gen3: config/app should be a directory again"
+              exit 1
+            fi
+            if [ ! -L "config/app/file1.toml" ]; then
+              echo "Gen3: file1.toml should be a symlink again"
+              exit 1
+            fi
+            if [ ! -L "config/app/file2.toml" ]; then
+              echo "Gen3: file2.toml should be a symlink"
+              exit 1
+            fi
+          '';
+        }
+      ];
+    };
+
+    # Test 3: Stash path migration across generations
+    test-multi-gen-stash-migration = mkMultiGenerationTest {
+      name = "test-multi-gen-stash-migration";
+
+      homeFiles = {
+        "old-dotfiles/config.toml".content = "location = old";
+        "new-dotfiles/config.toml".content = "location = new";
+      };
+
+      generations = [
+        # Generation 1: Use old-dotfiles
+        {
+          description = "Initial stash at old-dotfiles";
+          config = {
+            stashes.myStash.path = "old-dotfiles";
+            files."config/app/config.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/config.toml";
+              };
+            };
+          };
+          postActivation = ''
+            if ! grep -q "location = old" "config/app/config.toml"; then
+              echo "Gen1: Should point to old-dotfiles"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: Migrate to new-dotfiles
+        {
+          description = "Migrate stash to new-dotfiles";
+          config = {
+            stashes.myStash.path = "new-dotfiles";
+            files."config/app/config.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/config.toml";
+              };
+            };
+          };
+          postActivation = ''
+            if ! grep -q "location = new" "config/app/config.toml"; then
+              echo "Gen2: Should point to new-dotfiles now"
+              cat "config/app/config.toml"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 3: Add more files in new location
+        {
+          description = "Add more files in migrated stash";
+          preActivation = ''
+            echo "extra = true" > "$HOME/new-dotfiles/extra.toml"
+          '';
+          config = {
+            stashes.myStash.path = "new-dotfiles";
+            files."config/app/config.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/config.toml";
+              };
+            };
+            files."config/app/extra.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/extra.toml";
+              };
+            };
+          };
+          postActivation = ''
+            if ! grep -q "location = new" "config/app/config.toml"; then
+              echo "Gen3: config.toml still wrong"
+              exit 1
+            fi
+            if ! grep -q "extra = true" "config/app/extra.toml"; then
+              echo "Gen3: extra.toml not found or wrong content"
+              exit 1
+            fi
+          '';
+        }
+      ];
+    };
+
+    # Test 4: Static to Stash to Static transitions
+    test-multi-gen-source-type-transitions = mkMultiGenerationTest {
+      name = "test-multi-gen-source-type-transitions";
+
+      homeFiles = {
+        "dotfiles/editable-config.toml".content = "editable = true\nuser_setting = custom";
+      };
+
+      generations = [
+        # Generation 1: Static file from Nix
+        {
+          description = "Start with static file";
+          config = {
+            files."config/app.toml" = {
+              text = "managed = true\nversion = 1";
+            };
+          };
+          postActivation = ''
+            target=$(readlink "config/app.toml")
+            if ! echo "$target" | grep -q "/nix/store"; then
+              echo "Gen1: Should point to Nix store"
+              exit 1
+            fi
+            if ! grep -q "managed = true" "config/app.toml"; then
+              echo "Gen1: Wrong content"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: Convert to stash (user-editable)
+        {
+          description = "Convert to user-editable stash file";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/editable-config.toml";
+              };
+            };
+          };
+          postActivation = ''
+            target=$(readlink "config/app.toml")
+            if echo "$target" | grep -q "/nix/store"; then
+              echo "Gen2: Should NOT point to Nix store anymore"
+              exit 1
+            fi
+            if ! grep -q "editable = true" "config/app.toml"; then
+              echo "Gen2: Should have stash content now"
+              exit 1
+            fi
+            # User can now edit the file in the stash
+            echo "user_modified = true" >> "$HOME/dotfiles/editable-config.toml"
+          '';
+        }
+
+        # Generation 3: Back to static with new content
+        {
+          description = "Back to static with updated content";
+          config = {
+            files."config/app.toml" = {
+              text = "managed = true\nversion = 3\nreset = true";
+            };
+          };
+          postActivation = ''
+            target=$(readlink "config/app.toml")
+            if ! echo "$target" | grep -q "/nix/store"; then
+              echo "Gen3: Should point to Nix store again"
+              exit 1
+            fi
+            if ! grep -q "version = 3" "config/app.toml"; then
+              echo "Gen3: Should have new static content"
+              exit 1
+            fi
+            # User modifications in stash are preserved (not our concern)
+            if grep -q "user_modified" "$HOME/dotfiles/editable-config.toml"; then
+              echo "Gen3: User modifications preserved in stash ✓"
+            fi
+          '';
+        }
+      ];
+    };
+
+    # Test 5: Complex collision evolution
+    test-multi-gen-collision-evolution = mkMultiGenerationTest {
+      name = "test-multi-gen-collision-evolution";
+
+      homeFiles = {
+        "dotfiles/managed.toml".content = "managed = true";
+      };
+
+      generations = [
+        # Generation 1: No collision, clean setup
+        {
+          description = "Initial clean setup";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/managed.toml";
+              };
+            };
+          };
+          postActivation = ''
+            if [ ! -L "config/app.toml" ]; then
+              echo "Gen1: Should be symlinked"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: User creates a file that will collide in next gen
+        {
+          description = "User adds unrelated file";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/managed.toml";
+              };
+            };
+          };
+          preActivation = ''
+            # User creates their own file
+            echo "user_created = true" > "$HOME/config/user-file.toml"
+          '';
+          postActivation = ''
+            # User file should remain untouched
+            if [ ! -f "config/user-file.toml" ]; then
+              echo "Gen2: User file should exist"
+              exit 1
+            fi
+            if grep -q "user_created" "config/user-file.toml"; then
+              echo "Gen2: User file intact ✓"
+            fi
+          '';
+        }
+
+        # Generation 3: Add new managed file that collides with user file
+        {
+          description = "New managed file collides with user file";
+          preActivation = ''
+            # Put a file in stash that will now be managed
+            echo "now_managed = true" > "$HOME/dotfiles/user-file.toml"
+          '';
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/managed.toml";
+              };
+            };
+            files."config/user-file.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/user-file.toml";
+              };
+            };
+          };
+          postActivation = ''
+            # Should be backed up
+            if [ ! -f "config/user-file.toml.stash.bak" ]; then
+              echo "Gen3: User file should be backed up"
+              exit 1
+            fi
+            if ! grep -q "user_created" "config/user-file.toml.stash.bak"; then
+              echo "Gen3: Backup should have original user content"
+              exit 1
+            fi
+            # Now it's a symlink to managed version
+            if [ ! -L "config/user-file.toml" ]; then
+              echo "Gen3: Should now be a symlink"
+              exit 1
+            fi
+          '';
+        }
+      ];
+    };
+
+    # Test 6: Complex recursive tree with additions and removals
+    test-multi-gen-recursive-tree-evolution = mkMultiGenerationTest {
+      name = "test-multi-gen-recursive-tree-evolution";
+
+      homeFiles = {
+        "dotfiles/app/settings.toml".content = "version = 1";
+        "dotfiles/app/keybinds.toml".content = "keys = default";
+      };
+
+      generations = [
+        # Generation 1: Initial recursive setup with 2 files
+        {
+          description = "Initial recursive tree";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            if [ ! -L "config/app/settings.toml" ]; then
+              echo "Gen1: settings.toml should be symlinked"
+              exit 1
+            fi
+            if [ ! -L "config/app/keybinds.toml" ]; then
+              echo "Gen1: keybinds.toml should be symlinked"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: Add nested directory and new files
+        {
+          description = "Add nested structure";
+          preActivation = ''
+            mkdir -p "$HOME/dotfiles/app/themes"
+            echo "theme = dark" > "$HOME/dotfiles/app/themes/dark.toml"
+            echo "theme = light" > "$HOME/dotfiles/app/themes/light.toml"
+            echo "plugins = enabled" > "$HOME/dotfiles/app/plugins.toml"
+          '';
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            # Old files still there
+            if [ ! -L "config/app/settings.toml" ]; then
+              echo "Gen2: settings.toml should still be symlinked"
+              exit 1
+            fi
+            # New files added
+            if [ ! -L "config/app/plugins.toml" ]; then
+              echo "Gen2: plugins.toml should be symlinked"
+              exit 1
+            fi
+            if [ ! -L "config/app/themes/dark.toml" ]; then
+              echo "Gen2: themes/dark.toml should be symlinked"
+              exit 1
+            fi
+            if [ ! -L "config/app/themes/light.toml" ]; then
+              echo "Gen2: themes/light.toml should be symlinked"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 3: Remove some files and subdirectory
+        {
+          description = "Remove files and subdirectory";
+          preActivation = ''
+            rm "$HOME/dotfiles/app/keybinds.toml"
+            rm -rf "$HOME/dotfiles/app/themes"
+          '';
+          config = {
+            stashes.myStash.path = "dotfiles";
+            files."config/app" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/app";
+              };
+              recursive = true;
+            };
+          };
+          postActivation = ''
+            # Remaining files still linked
+            if [ ! -L "config/app/settings.toml" ]; then
+              echo "Gen3: settings.toml should still exist"
+              exit 1
+            fi
+            if [ ! -L "config/app/plugins.toml" ]; then
+              echo "Gen3: plugins.toml should still exist"
+              exit 1
+            fi
+            # Removed files should be gone
+            if [ -e "config/app/keybinds.toml" ]; then
+              echo "Gen3: keybinds.toml should be removed"
+              exit 1
+            fi
+            if [ -e "config/app/themes/dark.toml" ]; then
+              echo "Gen3: themes directory should be cleaned up"
+              exit 1
+            fi
+          '';
+        }
+      ];
+    };
+
+    # Test 7: Mixed static and stash with multiple transitions
+    test-multi-gen-mixed-complex = mkMultiGenerationTest {
+      name = "test-multi-gen-mixed-complex";
+
+      homeFiles = {
+        "dotfiles/user-theme.toml".content = "theme = custom";
+        "dotfiles/user-keys.toml".content = "bindings = vim";
+      };
+
+      generations = [
+        # Generation 1: Start with mix of static and stash
+        {
+          description = "Initial mix of static and stash";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            # Static hardware detection
+            files."config/app/hardware.toml" = {
+              text = "gpu = nvidia\nmemory = 16GB";
+            };
+            # User-editable theme
+            files."config/app/theme.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/user-theme.toml";
+              };
+            };
+          };
+          postActivation = ''
+            hw_target=$(readlink "config/app/hardware.toml")
+            if ! echo "$hw_target" | grep -q "/nix/store"; then
+              echo "Gen1: hardware.toml should be static"
+              exit 1
+            fi
+            theme_target=$(readlink "config/app/theme.toml")
+            if echo "$theme_target" | grep -q "/nix/store"; then
+              echo "Gen1: theme.toml should be from stash"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 2: Update static, add new stash file
+        {
+          description = "Update static, add keybindings";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            # Updated hardware
+            files."config/app/hardware.toml" = {
+              text = "gpu = amd\nmemory = 32GB";
+            };
+            # Same theme
+            files."config/app/theme.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/user-theme.toml";
+              };
+            };
+            # New keybindings
+            files."config/app/keys.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/user-keys.toml";
+              };
+            };
+          };
+          postActivation = ''
+            if ! grep -q "gpu = amd" "config/app/hardware.toml"; then
+              echo "Gen2: hardware.toml should be updated"
+              exit 1
+            fi
+            if [ ! -L "config/app/keys.toml" ]; then
+              echo "Gen2: keys.toml should be added"
+              exit 1
+            fi
+          '';
+        }
+
+        # Generation 3: Convert theme to static, remove hardware
+        {
+          description = "Theme becomes static, hardware removed";
+          config = {
+            stashes.myStash.path = "dotfiles";
+            # Theme now static (standardized)
+            files."config/app/theme.toml" = {
+              text = "theme = dark\nstandard = true";
+            };
+            # Keep keys from stash
+            files."config/app/keys.toml" = {
+              source = {
+                static = false;
+                stash = "myStash";
+                path = "/user-keys.toml";
+              };
+            };
+          };
+          postActivation = ''
+            # hardware removed
+            if [ -e "config/app/hardware.toml" ]; then
+              echo "Gen3: hardware.toml should be removed"
+              exit 1
+            fi
+            # theme is now static
+            theme_target=$(readlink "config/app/theme.toml")
+            if ! echo "$theme_target" | grep -q "/nix/store"; then
+              echo "Gen3: theme.toml should now be static"
+              exit 1
+            fi
+            if ! grep -q "standard = true" "config/app/theme.toml"; then
+              echo "Gen3: theme.toml should have new static content"
+              exit 1
+            fi
+            # keys still from stash
+            if ! grep -q "bindings = vim" "config/app/keys.toml"; then
+              echo "Gen3: keys.toml should still be from stash"
+              exit 1
+            fi
+          '';
+        }
+      ];
     };
   };
 }

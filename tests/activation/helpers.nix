@@ -203,4 +203,128 @@ rec {
         mkdir -p $out
         cp -r . $out
       '';
+
+  # Multi-generation test helper: runs a sequence of generations with real state accumulation
+  mkMultiGenerationTest =
+    {
+      name,
+      # List of generation specs
+      generations,
+      # Initial home files before any activation
+      homeFiles ? { },
+      env ? { },
+    }:
+    pkgs.runCommand name
+      {
+        nativeBuildInputs = [
+          pkgs.deno
+          pkgs.diffutils
+          pkgs.coreutils
+          pkgs.findutils
+          pkgs.jq
+        ];
+
+        USER = testUser;
+        HOME = testHome;
+        XDG_STATE_HOME = "${testHome}/.local/state";
+      }
+      ''
+        mkdir -p $HOME
+        mkdir -p "$XDG_STATE_HOME/stash/gcroots"
+        gcRootsDir="$XDG_STATE_HOME/stash/gcroots"
+        manifestPath="$XDG_STATE_HOME/stash/manifest.json"
+
+        # Set up initial home files
+        ${setupHomeFiles homeFiles}
+
+        # Export environment variables
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (name: value: ''
+            export ${name}="${value}"
+          '') env
+        )}
+
+        # Run each generation sequentially
+        ${lib.concatImapStringsSep "\n" (index: gen: ''
+          echo ""
+          echo "======================================================================="
+          echo "=== Generation ${toString index}: ${gen.description or "gen${toString index}"}"
+          echo "======================================================================="
+          echo ""
+
+          genPath="${mkGeneration gen.config}"
+          echo "Generation path: $genPath"
+
+          # Run pre-activation hook if specified
+          ${lib.optionalString (gen.preActivation or "" != "") ''
+            echo "=== Running pre-activation hook for gen ${toString index} ==="
+            pushd $HOME >/dev/null
+            ${gen.preActivation}
+            popd >/dev/null
+          ''}
+
+          # Handle expected failures
+          ${
+            if gen.expectFailure or false then
+              ''
+                set +e
+                ACTIVATE_STDERR="$TMPDIR/activate-stderr-gen${toString index}.log"
+                ACTIVATE_STDOUT="$TMPDIR/activate-stdout-gen${toString index}.log"
+                ${activateScript}/bin/stash-activate-test "$genPath" \
+                  >"$ACTIVATE_STDOUT" 2>"$ACTIVATE_STDERR"
+                ACTIVATE_EXIT=$?
+                set -e
+
+                echo "Activation exited with code: $ACTIVATE_EXIT"
+                cat "$ACTIVATE_STDOUT"
+                cat "$ACTIVATE_STDERR" >&2
+
+                if [ "$ACTIVATE_EXIT" -eq 0 ]; then
+                  echo "Expected generation ${toString index} activation to fail but it succeeded"
+                  exit 1
+                fi
+
+                ${lib.optionalString (gen.expectedExitCode or null != null) ''
+                  if [ "$ACTIVATE_EXIT" -ne ${toString gen.expectedExitCode} ]; then
+                    echo "Expected exit code ${toString gen.expectedExitCode}, got $ACTIVATE_EXIT"
+                    exit 1
+                  fi
+                ''}
+
+                ${lib.optionalString (gen.expectedErrorRegex or null != null) ''
+                  if ! grep -E '${gen.expectedErrorRegex}' "$ACTIVATE_STDERR" >/dev/null 2>&1; then
+                    echo "Expected error message matching /${gen.expectedErrorRegex}/ not found in stderr"
+                    echo "stderr was:"
+                    cat "$ACTIVATE_STDERR" >&2
+                    exit 1
+                  fi
+                ''}
+
+                echo "Generation ${toString index} failed as expected"
+              ''
+            else
+              ''
+                echo "=== Running activation for gen ${toString index} ==="
+                ${activateScript}/bin/stash-activate-test "$genPath"
+
+                echo "=== Running post-activation checks for gen ${toString index} ==="
+                pushd $HOME >/dev/null
+                ${gen.postActivation or ""}
+                popd >/dev/null
+
+                echo "Generation ${toString index} activated successfully"
+              ''
+          }
+        '') generations}
+
+        echo ""
+        echo "======================================================================="
+        echo "=== All generations completed successfully ==="
+        echo "======================================================================="
+
+        cd $HOME
+        echo "Multi-generation test passed: ${name}"
+        mkdir -p $out
+        cp -r . $out
+      '';
 }
