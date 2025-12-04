@@ -30,6 +30,11 @@
             ./tests/test-machine.nix
           ];
         };
+
+        nixosModules = rec {
+          stash = import ./modules/nixos.nix;
+          default = stash;
+        };
       };
 
       perSystem =
