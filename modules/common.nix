@@ -66,6 +66,12 @@
           )
         );
 
+        warnings = lib.flatten (
+          lib.flip lib.mapAttrsToList cfg.users (
+            user: userCfg: lib.flip lib.map userCfg.warnings (warning: "${user} stash config: ${warning}")
+          )
+        );
+
         lib.stash = {
           # Helper to create a source reference from a stash
           fromStash =

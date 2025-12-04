@@ -744,8 +744,9 @@
     };
   };
 
-  # Target inside recursive folder tests
-  targetInsideRecursive-fail = {
+  # Target inside recursive folder tests (now warnings, not assertions)
+  # These test that explicit entries inside recursive folders emit warnings
+  targetInsideRecursive-warning = {
     config = {
       homeDirectory = "/home/test";
       files = {
@@ -754,30 +755,19 @@
           target = ".config/nvim";
           recursive = true;
         };
-        "bad-file" = {
+        "override-file" = {
           source = "/dev/null";
           target = ".config/nvim/lua/plugins.lua";
         };
       };
     };
-    "test should fail when target is inside recursive folder target" = {
-      expr =
-        cfg:
-        builtins.map (
-          a:
-          builtins.removeAttrs a [
-            "assertion"
-            "message"
-          ]
-        ) (builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions);
-      expected = [
-        {
-          type = "target.inside-recursive";
-          entry = "bad-file";
-          target = ".config/nvim/lua/plugins.lua";
-          recursiveTarget = ".config/nvim";
-        }
-      ];
+    "test should emit warning when target is inside recursive folder target" = {
+      expr = cfg: builtins.length cfg.warnings > 0;
+      expected = true;
+    };
+    "test warning should mention the recursive folder" = {
+      expr = cfg: builtins.any (w: builtins.match ".*\\.config/nvim.*" w != null) cfg.warnings;
+      expected = true;
     };
   };
 
@@ -790,8 +780,8 @@
         recursive = true;
       };
     };
-    "test should pass for the recursive entry itself" = {
-      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions;
+    "test should not warn for the recursive entry itself" = {
+      expr = cfg: cfg.warnings;
       expected = [ ];
     };
   };
@@ -811,8 +801,8 @@
         };
       };
     };
-    "test should pass when target is sibling of recursive folder" = {
-      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions;
+    "test should not warn when target is sibling of recursive folder" = {
+      expr = cfg: cfg.warnings;
       expected = [ ];
     };
   };
@@ -832,8 +822,8 @@
         };
       };
     };
-    "test should pass when target has similar prefix but is not inside" = {
-      expr = cfg: builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions;
+    "test should not warn when target has similar prefix but is not inside" = {
+      expr = cfg: cfg.warnings;
       expected = [ ];
     };
   };
@@ -852,30 +842,19 @@
           target = ".config/tmux";
           recursive = true;
         };
-        "bad-file" = {
+        "override-file" = {
           source = "/dev/null";
           target = ".config/tmux/plugins/tpm.conf";
         };
       };
     };
-    "test should fail when target is inside any recursive folder" = {
-      expr =
-        cfg:
-        builtins.map (
-          a:
-          builtins.removeAttrs a [
-            "assertion"
-            "message"
-          ]
-        ) (builtins.filter (a: !a.assertion && a.type == "target.inside-recursive") cfg.assertions);
-      expected = [
-        {
-          type = "target.inside-recursive";
-          entry = "bad-file";
-          target = ".config/tmux/plugins/tpm.conf";
-          recursiveTarget = ".config/tmux";
-        }
-      ];
+    "test should emit warning when target is inside any recursive folder" = {
+      expr = cfg: builtins.length cfg.warnings > 0;
+      expected = true;
+    };
+    "test warning should mention the tmux recursive folder" = {
+      expr = cfg: builtins.any (w: builtins.match ".*\\.config/tmux.*" w != null) cfg.warnings;
+      expected = true;
     };
   };
 

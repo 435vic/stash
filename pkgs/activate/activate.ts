@@ -131,7 +131,8 @@ interface ValidationWarning {
     | "missing_source"
     | "corrupted_symlink"
     | "unexpected_type"
-    | "cleanup_mismatch";
+    | "cleanup_mismatch"
+    | "shadowed_by_explicit";
   message: string;
   entry?: ManifestEntry | StashFileEntry;
   path: string;
@@ -983,6 +984,15 @@ async function activate() {
   const newManifestEntries: ManifestEntry[] = [];
   const expandWarnings: ValidationWarning[] = [];
 
+  // Collect all explicit (non-recursive) entry targets first
+  // These take precedence over files discovered through recursive expansion
+  const explicitTargets = new Set<string>();
+  for (const entry of Object.values(newGenConfig.files)) {
+    if (!entry.recursive) {
+      explicitTargets.add(entry.target);
+    }
+  }
+
   for (const entry of Object.values(newGenConfig.files)) {
     const { entries, warnings } = await expandEntry(entry, newGenConfig);
     debugLog(
@@ -994,10 +1004,55 @@ async function activate() {
   }
 
   // Turn the list into a manifest map keyed by target path
+  // Detect when recursive entries are shadowed by explicit entries
   const newManifest: Manifest = {};
+  const shadowWarnings: ValidationWarning[] = [];
+
   for (const entry of newManifestEntries) {
-    newManifest[entry.target] = entry;
+    const existingEntry = newManifest[entry.target];
+
+    if (existingEntry) {
+      // There's a conflict - determine which entry is explicit vs recursive
+      const existingIsRecursive = existingEntry.recursiveRoot !== null;
+      const newIsRecursive = entry.recursiveRoot !== null;
+
+      if (existingIsRecursive && !newIsRecursive) {
+        // New explicit entry shadows existing recursive entry
+        shadowWarnings.push({
+          type: "warning",
+          category: "shadowed_by_explicit",
+          message:
+            `Explicit entry "${entry.target}" shadows file from recursive entry "${existingEntry.recursiveRoot}"`,
+          entry: existingEntry,
+          path: existingEntry.source,
+          details:
+            `The file "${existingEntry.sourceRelPath}" from the recursive expansion will not be linked. The explicit entry takes precedence.`,
+        });
+        newManifest[entry.target] = entry;
+      } else if (!existingIsRecursive && newIsRecursive) {
+        // Existing explicit entry shadows new recursive entry
+        shadowWarnings.push({
+          type: "warning",
+          category: "shadowed_by_explicit",
+          message:
+            `Explicit entry "${existingEntry.target}" shadows file from recursive entry "${entry.recursiveRoot}"`,
+          entry: entry,
+          path: entry.source,
+          details:
+            `The file "${entry.sourceRelPath}" from the recursive expansion will not be linked. The explicit entry takes precedence.`,
+        });
+        // Keep the existing explicit entry, don't overwrite
+      } else {
+        // Both are the same type (both recursive or both explicit)
+        // This shouldn't happen normally due to assertions, but handle gracefully
+        newManifest[entry.target] = entry;
+      }
+    } else {
+      newManifest[entry.target] = entry;
+    }
   }
+
+  expandWarnings.push(...shadowWarnings);
 
   debugLog(
     "[activate] constructed new manifest with",

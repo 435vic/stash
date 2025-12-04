@@ -156,6 +156,9 @@ let
         };
 
         config = {
+          # Allows mkIf for source/text entries to work properly
+          enable = mkDefault config.source != null;
+
           target = mkDefault name;
           source = mkMerge [
             (mkIf (config.text != null) (
@@ -266,6 +269,33 @@ let
   enabledFiles = lib.filterAttrs (_: f: f.enable && f.source != null) config.files;
   staticFiles = lib.filterAttrs (_: f: f.source.static) enabledFiles;
   stashFiles = lib.filterAttrs (_: f: !f.source.static) enabledFiles;
+
+  # Target path inside a recursive entry's target (used for warnings)
+  # This is allowed for mixing static files with recursive stash entries,
+  # where the explicit entry takes precedence over the recursive expansion.
+  recursiveTargets = lib.mapAttrsToList (_: f: f.target) (
+    lib.filterAttrs (_: f: f.recursive) enabledFiles
+  );
+
+  targetInsideRecursiveWarnings = lib.filter (w: w != null) (
+    lib.mapAttrsToList (
+      n: f:
+      let
+        targetPath = f.target;
+        # Check if this target is strictly inside another recursive target (not equal)
+        matchingRecursive = lib.findFirst (
+          recTarget: lib.hasPrefix (recTarget + "/") targetPath
+        ) null recursiveTargets;
+      in
+      if matchingRecursive != null then
+        ''
+          The target path "${f.target}" for file entry "${n}" is inside the recursive folder target "${matchingRecursive}".
+          The explicit entry will take precedence over any file from the recursive expansion.
+        ''
+      else
+        null
+    ) enabledFiles
+  );
 in
 {
   imports = [
@@ -427,36 +457,7 @@ in
           }
         ) enabledFiles;
 
-        # 6. Target path cannot be inside a recursive entry's target
-        recursiveTargets = lib.mapAttrsToList (_: f: f.target) (
-          lib.filterAttrs (_: f: f.recursive) enabledFiles
-        );
-
-        targetNotInRecursiveAssertions = lib.mapAttrsToList (
-          n: f:
-          let
-            targetPath = f.target;
-            # A target is invalid if it's strictly inside another recursive target (not equal)
-            matchingRecursive = lib.findFirst (
-              recTarget: lib.hasPrefix (recTarget + "/") targetPath
-            ) null recursiveTargets;
-          in
-          {
-            assertion = matchingRecursive == null;
-            type = "target.inside-recursive";
-            entry = n;
-            target = f.target;
-            recursiveTarget = matchingRecursive;
-            message = ''
-              The target path "${f.target}" for file entry "${n}" is inside a recursive folder target "${
-                if matchingRecursive != null then matchingRecursive else ""
-              }".
-              Symlinks cannot be created inside folders managed by recursive entries.
-            '';
-          }
-        ) enabledFiles;
-
-        # 7. Init source URL must be set when init.enable is true
+        # 6. Init source URL must be set when init.enable is true
         initUrlAssertions = lib.mapAttrsToList (name: stash: {
           assertion = !stash.init.enable || stash.init.source.url != "";
           type = "stash.init-missing-url";
@@ -467,7 +468,7 @@ in
           '';
         }) config.stashes;
 
-        # 8. Source must be defined when file is enabled
+        # 7. Source must be defined when file is enabled
         sourceDefinedAssertions = lib.mapAttrsToList (name: f: {
           assertion = !f.enable || f.source != null;
           type = "file.missing-source";
@@ -487,10 +488,11 @@ in
         targetPathSafetyAssertions
         stashSourcePathSafetyAssertions
         targetNotInStashAssertions
-        targetNotInRecursiveAssertions
         initUrlAssertions
         sourceDefinedAssertions
       ];
+
+    warnings = targetInsideRecursiveWarnings;
 
     staticFileDerivation = mkIf (staticFiles != { }) (
       pkgs.runCommandLocal "stash-files"

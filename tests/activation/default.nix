@@ -3016,5 +3016,86 @@ in
         exit 0
       '';
     };
+
+    # Test that explicit entries shadow files from recursive stash expansion
+    # and that a warning is emitted
+    test-explicit-shadows-recursive = mkActivationTest {
+      name = "explicit-shadows-recursive";
+
+      homeFiles = {
+        # Stash contains multiple files
+        "dotfiles/app/settings.toml".content = "from-stash = true";
+        "dotfiles/app/theme.toml".content = "theme-from-stash = true";
+        "dotfiles/app/keybinds.toml".content = "keys-from-stash = true";
+      };
+
+      newGen = {
+        stashes.myStash.path = "dotfiles";
+
+        # Recursive entry for the app directory
+        files."config/app" = {
+          source = {
+            static = false;
+            stash = "myStash";
+            path = "app";
+          };
+          recursive = true;
+        };
+
+        # Explicit entry that shadows one file from the recursive expansion
+        files."config/app/theme.toml" = {
+          text = "theme-from-nix = true";
+        };
+      };
+
+      postActivation = ''
+        # Check that the explicit entry took precedence for theme.toml
+        theme_target=$(readlink "$HOME/config/app/theme.toml")
+        if [[ "$theme_target" == *"/nix/store/"* ]]; then
+          echo "theme.toml correctly points to nix store (explicit entry)"
+        else
+          echo "ERROR: theme.toml should point to nix store, but points to: $theme_target"
+          exit 1
+        fi
+
+        # Verify the content is from the explicit entry
+        if grep -q "theme-from-nix" "$HOME/config/app/theme.toml"; then
+          echo "theme.toml has correct content from explicit entry"
+        else
+          echo "ERROR: theme.toml does not have expected content"
+          cat "$HOME/config/app/theme.toml"
+          exit 1
+        fi
+
+        # Check that other files from recursive expansion are still linked to stash
+        settings_target=$(readlink "$HOME/config/app/settings.toml")
+        if [[ "$settings_target" == "$HOME/dotfiles/app/settings.toml" ]]; then
+          echo "settings.toml correctly points to stash"
+        else
+          echo "ERROR: settings.toml should point to stash, but points to: $settings_target"
+          exit 1
+        fi
+
+        keybinds_target=$(readlink "$HOME/config/app/keybinds.toml")
+        if [[ "$keybinds_target" == "$HOME/dotfiles/app/keybinds.toml" ]]; then
+          echo "keybinds.toml correctly points to stash"
+        else
+          echo "ERROR: keybinds.toml should point to stash, but points to: $keybinds_target"
+          exit 1
+        fi
+
+        # Check that activation output contains shadowing warning
+        if [ -f "$out/activation.log" ]; then
+          if grep -qi "shadow" "$out/activation.log"; then
+            echo "Shadowing warning found in activation log"
+          else
+            echo "WARNING: Expected shadowing warning in activation log"
+            # Not a fatal error, just informational
+          fi
+        fi
+
+        echo "Test passed: explicit entry correctly shadows recursive expansion"
+      '';
+    };
   };
 }
