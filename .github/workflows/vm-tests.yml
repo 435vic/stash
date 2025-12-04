@@ -15,7 +15,9 @@ jobs:
       - uses: cachix/install-nix-action@v31
         with:
           enable_kvm: true
-          extra_nix_config: "system-features = nixos-test benchmark big-parallel kvm"
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+            sandbox = false
 
       - name: Run VM tests
         run: nix build .#vmTests.all --print-build-logs

@@ -278,5 +278,53 @@ in
         check_file_content(machine, "${testUserHome}/.config/app/user.toml", 'name = "testuser"')
       '';
     };
+
+    # Test: stash initialization from git repository
+    stash-init-git = runStashTest {
+      name = "stash-init-git";
+      stashConfig = {
+        stashes.stash-repo = {
+          path = "stash-repo";
+          init = {
+            enable = true;
+            source = {
+              type = "git";
+              url = "https://github.com/435vic/stash.git";
+              ref = "main";
+            };
+          };
+        };
+      };
+      extraConfig = {
+        # Need network access for git clone
+        virtualisation.restrictNetwork = false;
+        networking.useDHCP = true;
+      };
+      testScript = ''
+        ${checkSymlinkScript}
+
+        # Wait for the init service to complete (it runs after stash activation)
+        machine.wait_for_unit("stash-init-${testUser}.service", timeout=300)
+
+        # Verify the stash directory was created
+        check_is_directory(machine, "${testUserHome}/stash-repo")
+
+        # Verify core files that should always exist in the stash repo
+        check_file_exists(machine, "${testUserHome}/stash-repo/flake.nix")
+        check_file_exists(machine, "${testUserHome}/stash-repo/README.md")
+        check_file_exists(machine, "${testUserHome}/stash-repo/flake.lock")
+
+        # Verify it's actually a git repository
+        check_is_directory(machine, "${testUserHome}/stash-repo/.git")
+
+        # Verify key directories exist
+        check_is_directory(machine, "${testUserHome}/stash-repo/modules")
+        check_is_directory(machine, "${testUserHome}/stash-repo/tests")
+
+        # Verify flake.nix contains expected content (stash description)
+        content = machine.succeed("cat ${testUserHome}/stash-repo/flake.nix")
+        assert "Stash" in content, f"flake.nix should mention Stash, got: {content[:200]}"
+      '';
+    };
   };
 }
