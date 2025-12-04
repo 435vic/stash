@@ -150,7 +150,8 @@ let
               };
             in
             mkOption {
-              type = strOrSourceDef;
+              type = types.nullOr strOrSourceDef;
+              default = null;
             };
         };
 
@@ -262,8 +263,9 @@ let
         }
       )
     );
-  staticFiles = lib.filterAttrs (_: f: f.source.static) config.files;
-  stashFiles = lib.filterAttrs (_: f: !f.source.static) config.files;
+  enabledFiles = lib.filterAttrs (_: f: f.enable && f.source != null) config.files;
+  staticFiles = lib.filterAttrs (_: f: f.source.static) enabledFiles;
+  stashFiles = lib.filterAttrs (_: f: !f.source.static) enabledFiles;
 in
 {
   imports = [
@@ -339,7 +341,7 @@ in
             target = f.target;
             message = ''Stash name ${f.source.stash} for `files."${f.target}" has not been defined.'';
           }
-        ) config.files;
+        ) enabledFiles;
         # 1. Duplicate targets check
         # We group files by their target path and check if any group has more than one member.
         filesByTarget = lib.groupBy (f: f.target) (lib.attrValues config.files);
@@ -423,11 +425,11 @@ in
               Symlinks cannot be created inside stash folders.
             '';
           }
-        ) config.files;
+        ) enabledFiles;
 
         # 6. Target path cannot be inside a recursive entry's target
         recursiveTargets = lib.mapAttrsToList (_: f: f.target) (
-          lib.filterAttrs (_: f: f.recursive) config.files
+          lib.filterAttrs (_: f: f.recursive) enabledFiles
         );
 
         targetNotInRecursiveAssertions = lib.mapAttrsToList (
@@ -452,7 +454,7 @@ in
               Symlinks cannot be created inside folders managed by recursive entries.
             '';
           }
-        ) config.files;
+        ) enabledFiles;
 
         # 7. Init source URL must be set when init.enable is true
         initUrlAssertions = lib.mapAttrsToList (name: stash: {
@@ -465,6 +467,18 @@ in
           '';
         }) config.stashes;
 
+        # 8. Source must be defined when file is enabled
+        sourceDefinedAssertions = lib.mapAttrsToList (name: f: {
+          assertion = !f.enable || f.source != null;
+          type = "file.missing-source";
+          entry = name;
+          target = f.target;
+          message = ''
+            The file entry "${name}" is enabled but has no source defined.
+            Either set `text`, `source`, or set `enable = false`.
+          '';
+        }) config.files;
+
       in
       mkMerge [
         validStashRefs
@@ -475,6 +489,7 @@ in
         targetNotInStashAssertions
         targetNotInRecursiveAssertions
         initUrlAssertions
+        sourceDefinedAssertions
       ];
 
     staticFileDerivation = mkIf (staticFiles != { }) (
@@ -580,7 +595,7 @@ in
               path = if cfg.source.static then toString (sourceStorePath cfg.source.path) else cfg.source.path;
             };
           };
-        }) config.files;
+        }) enabledFiles;
 
         stashes = lib.mapAttrs' (name: stashCfg: {
           name = name;
