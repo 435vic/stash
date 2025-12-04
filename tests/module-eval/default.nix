@@ -37,4 +37,4 @@ mapAttrs (
     (filterAttrs (n: _: (substring 0 4 n == "test")))
     (mapAttrs' (mkTest name evaluatedConfig))
   ]
-) (import ./tests.nix)
+) (import ./tests.nix { inherit pkgs lib; })

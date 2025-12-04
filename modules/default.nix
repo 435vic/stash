@@ -150,26 +150,20 @@ let
               };
             in
             mkOption {
-              type = types.nullOr strOrSourceDef;
-              default = null;
+              type = strOrSourceDef;
             };
         };
 
         config = {
-          # Allows mkIf for source/text entries to work properly
-          enable = mkDefault config.source != null;
-
           target = mkDefault name;
-          source = mkMerge [
-            (mkIf (config.text != null) (
-              pkgs.writeTextFile {
-                inherit (config) text;
-                # executable = config.executable == true;
-                executable = false;
-                name = "stash_" + (builtins.baseNameOf name);
-              }
-            ))
-          ];
+          source = mkIf (config.text != null) (
+            pkgs.writeTextFile {
+              inherit (config) text;
+              # executable = config.executable == true;
+              executable = false;
+              name = "stash_" + (builtins.baseNameOf name);
+            }
+          );
         };
       }
     )
@@ -266,7 +260,7 @@ let
         }
       )
     );
-  enabledFiles = lib.filterAttrs (_: f: f.enable && f.source != null) config.files;
+  enabledFiles = lib.filterAttrs (_: f: f.enable) config.files;
   staticFiles = lib.filterAttrs (_: f: f.source.static) enabledFiles;
   stashFiles = lib.filterAttrs (_: f: !f.source.static) enabledFiles;
 
@@ -468,17 +462,17 @@ in
           '';
         }) config.stashes;
 
-        # 7. Source must be defined when file is enabled
-        sourceDefinedAssertions = lib.mapAttrsToList (name: f: {
-          assertion = !f.enable || f.source != null;
-          type = "file.missing-source";
-          entry = name;
-          target = f.target;
-          message = ''
-            The file entry "${name}" is enabled but has no source defined.
-            Either set `text`, `source`, or set `enable = false`.
-          '';
-        }) config.files;
+        # # 7. Source must be defined when file is enabled
+        # sourceDefinedAssertions = lib.mapAttrsToList (name: f: {
+        #   assertion = !f.enable || f.source != null;
+        #   type = "file.missing-source";
+        #   entry = name;
+        #   target = f.target;
+        #   message = ''
+        #     The file entry "${name}" is enabled but has no source defined.
+        #     Either set `text`, `source`, or set `enable = false`.
+        #   '';
+        # }) config.files;
 
       in
       mkMerge [
@@ -489,7 +483,6 @@ in
         stashSourcePathSafetyAssertions
         targetNotInStashAssertions
         initUrlAssertions
-        sourceDefinedAssertions
       ];
 
     warnings = targetInsideRecursiveWarnings;

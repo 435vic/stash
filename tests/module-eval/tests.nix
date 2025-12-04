@@ -1,3 +1,4 @@
+{ lib, ... }:
 {
   validStashRefs-fail = {
     config = {
