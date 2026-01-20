@@ -8,14 +8,14 @@ in
   stash-activate = mkDenoScript {
     name = "stash-activate";
     src = ./activate/activate.ts;
-    denoDepsHash = "sha256-sg+riBz2X18yvm/iGou1Q3VcFLOt40psvV6sRjGLg8E=";
+    denoDepsHash = "sha256-qa10CZ3mzsB91kB7Kh+cFtiQbxQtz7h6EFsLAiEAvbc=";
     denoArgs = [ "-A" ];
   };
 
   stash-cli = mkDenoScript {
     name = "stash";
     src = ./cli/cli.ts;
-    denoDepsHash = "sha256-XJtXHy4691BszFb2S0OpqK0Wajk0+fCvOtiJeAwzB/Q=";
+    denoDepsHash = "sha256-caLoxdC3y1en/uNM5WUmyzUdSA88z7YKhN+3YuRC4Ow=";
     denoArgs = [ "-A" ];
   };
 }
